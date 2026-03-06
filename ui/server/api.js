@@ -693,6 +693,178 @@ router.get('/planning-conversations/:filename', (req, res) => {
   }
 })
 
+// GET /api/projects/:name/review — list changed files in the project's code_path
+router.get('/projects/:name/review', (req, res) => {
+  const project = db.prepare(
+    `SELECT code_path FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`
+  ).get(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!project.code_path) return res.status(422).json({ error: 'No code_path set for this project' })
+
+  const dir = expandPath(project.code_path)
+  if (!existsSync(dir)) return res.status(404).json({ error: 'code_path does not exist' })
+
+  const result = spawnSync('git', ['status', '--porcelain'], {
+    cwd: dir, encoding: 'utf8', timeout: 10000,
+  })
+  if (result.status !== 0) {
+    return res.status(422).json({ error: result.stderr?.trim() || 'git status failed' })
+  }
+
+  const files = result.stdout.trim().split('\n')
+    .filter(Boolean)
+    .map(line => {
+      const xy = line.slice(0, 2)
+      const path = line.slice(3)
+      // Normalise to a single display code
+      let status = xy.trim()
+      if (xy === '??') status = '??'
+      else if (xy[0] === 'R' || xy[1] === 'R') status = 'R'
+      else if (xy[0] === 'D' || xy[1] === 'D') status = 'D'
+      else if (xy[0] === 'A' || xy[1] === 'A') status = 'A'
+      else status = 'M'
+      return { status, path }
+    })
+
+  res.json({ files })
+})
+
+// GET /api/projects/:name/review/diff?file=... — unified diff for one file
+router.get('/projects/:name/review/diff', (req, res) => {
+  const project = db.prepare(
+    `SELECT code_path FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`
+  ).get(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  if (!project.code_path) return res.status(422).json({ error: 'No code_path set' })
+
+  const file = req.query.file
+  if (!file) return res.status(400).json({ error: 'file required' })
+
+  const dir = expandPath(project.code_path)
+
+  // Check if HEAD exists (may not in a brand new repo)
+  const hasHead = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], {
+    cwd: dir, encoding: 'utf8', timeout: 5000,
+  }).status === 0
+
+  const statusResult = spawnSync('git', ['status', '--porcelain', '--', file], {
+    cwd: dir, encoding: 'utf8', timeout: 5000,
+  })
+  const statusLine = statusResult.stdout.trim()
+  const xy = statusLine.slice(0, 2)
+  const isUntracked = xy === '??'
+
+  let diff = ''
+
+  if (isUntracked) {
+    // Show entire file as added
+    diff = spawnSync('git', ['diff', '--no-index', '/dev/null', file], {
+      cwd: dir, encoding: 'utf8', timeout: 10000,
+    }).stdout
+  } else if (!hasHead) {
+    // New repo, no commits — all changes are in the index
+    diff = spawnSync('git', ['diff', '--cached', '--', file], {
+      cwd: dir, encoding: 'utf8', timeout: 10000,
+    }).stdout
+    // If not staged, diff the working tree file against /dev/null
+    if (!diff.trim()) {
+      diff = spawnSync('git', ['diff', '--no-index', '/dev/null', file], {
+        cwd: dir, encoding: 'utf8', timeout: 10000,
+      }).stdout
+    }
+  } else {
+    // Has commits — compare working tree + index against HEAD
+    diff = spawnSync('git', ['diff', 'HEAD', '--', file], {
+      cwd: dir, encoding: 'utf8', timeout: 10000,
+    }).stdout
+  }
+
+  res.json({ diff: diff || '' })
+})
+
+// POST /api/projects/:name/review/discard — discard changes to a single file
+router.post('/projects/:name/review/discard', (req, res) => {
+  const project = db.prepare(
+    `SELECT code_path FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`
+  ).get(req.params.name)
+  if (!project?.code_path) return res.status(422).json({ error: 'No code_path set' })
+
+  const file = req.body?.file
+  if (!file) return res.status(400).json({ error: 'file required' })
+
+  const dir = expandPath(project.code_path)
+  if (!existsSync(dir)) return res.status(404).json({ error: 'code_path does not exist' })
+
+  const hasHead = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], {
+    cwd: dir, encoding: 'utf8', timeout: 5000,
+  }).status === 0
+
+  // Check if file is untracked
+  const statusResult = spawnSync('git', ['status', '--porcelain', '--', file], {
+    cwd: dir, encoding: 'utf8', timeout: 5000,
+  })
+  const isUntracked = statusResult.stdout.trim().startsWith('??')
+
+  if (isUntracked) {
+    try { rmSync(join(dir, file), { force: true }) } catch (e) {
+      return res.status(500).json({ error: e.message })
+    }
+  } else if (hasHead) {
+    const r = spawnSync('git', ['restore', '--', file], { cwd: dir, encoding: 'utf8', timeout: 10000 })
+    if (r.status !== 0) return res.status(500).json({ error: r.stderr?.trim() || 'restore failed' })
+  } else {
+    // No HEAD — unstage the file then delete it
+    spawnSync('git', ['rm', '--cached', '--quiet', '--', file], { cwd: dir, encoding: 'utf8', timeout: 10000 })
+    try { rmSync(join(dir, file), { force: true }) } catch { /* ignore */ }
+  }
+
+  res.json({ ok: true })
+})
+
+// POST /api/projects/:name/review/commit — stage a single file and commit
+router.post('/projects/:name/review/commit', (req, res) => {
+  const project = db.prepare(
+    `SELECT code_path FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`
+  ).get(req.params.name)
+  if (!project?.code_path) return res.status(422).json({ error: 'No code_path set' })
+
+  const { file, message } = req.body ?? {}
+  if (!file) return res.status(400).json({ error: 'file required' })
+  if (!message?.trim()) return res.status(400).json({ error: 'message required' })
+
+  const dir = expandPath(project.code_path)
+  if (!existsSync(dir)) return res.status(404).json({ error: 'code_path does not exist' })
+
+  const add = spawnSync('git', ['add', '--', file], { cwd: dir, encoding: 'utf8', timeout: 10000 })
+  if (add.status !== 0) return res.status(500).json({ error: add.stderr?.trim() || 'git add failed' })
+
+  const commit = spawnSync('git', ['commit', '-m', message.trim()], { cwd: dir, encoding: 'utf8', timeout: 10000 })
+  if (commit.status !== 0) return res.status(500).json({ error: commit.stderr?.trim() || 'git commit failed' })
+
+  res.json({ ok: true })
+})
+
+// GET /api/detect-git-remote?path=... — detect git remote URL from a local repo
+router.get('/detect-git-remote', (req, res) => {
+  const raw = req.query.path
+  if (!raw) return res.status(400).json({ error: 'path required' })
+
+  const dir = expandPath(raw)
+  if (!existsSync(dir)) return res.status(404).json({ error: 'Path does not exist' })
+
+  const result = spawnSync('git', ['remote', 'get-url', 'origin'], {
+    cwd: dir,
+    encoding: 'utf8',
+    timeout: 5000,
+  })
+
+  if (result.status !== 0) {
+    return res.status(422).json({ error: result.stderr?.trim() || 'No git remote found' })
+  }
+
+  res.json({ url: result.stdout.trim() })
+})
+
 // POST /api/clone-codebase — clone a remote git repo to dest
 router.post('/clone-codebase', (req, res) => {
   const { url, dest } = req.body

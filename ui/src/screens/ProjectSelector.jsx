@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import ProjectSettingsPanel from '../components/ProjectSettingsPanel.jsx'
 
 const GIT_BACKENDS = ['', 'forgejo', 'github', 'gitlab']
 const GIT_LABELS   = { '': '— none —', forgejo: 'Internal Forgejo', github: 'GitHub', gitlab: 'GitLab' }
@@ -265,140 +266,6 @@ function NewProjectForm({ onCancel, onCreate }) {
 
 // ——— Existing project card + settings ———
 
-function expandHome(p, home) {
-  if (!p) return p
-  if (p.startsWith('~/')) return home + p.slice(1)
-  if (p === '~') return home
-  return p
-}
-
-function SettingsPanel({ project, onClose, onSave, onDelete }) {
-  const [form, setForm] = useState({
-    name:         project.name,
-    description:  project.description || '',
-    code_path:    project.code_path || '',
-    git_backend:  project.git_backend || '',
-    git_repo_url: project.git_repo_url || '',
-  })
-  const [config, setConfig]             = useState({ scryer_root: '', code_root: '', home: '' })
-  const [saving, setSaving]             = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [deleteCode, setDeleteCode]     = useState(false)
-  const [deleting, setDeleting]         = useState(false)
-
-  useEffect(() => {
-    fetch('/api/config')
-      .then(r => r.json())
-      .then(d => setConfig({ scryer_root: d.scryer_root || '', code_root: d.code_root || '', home: d.home || '' }))
-      .catch(() => {})
-  }, [])
-
-  // A code path is "internal" if it lives under code_root
-  const expandedCodeRoot = expandHome(config.code_root, config.home)
-  const expandedCodePath = expandHome(project.code_path, config.home)
-  const isCodeInternal   = !!(
-    expandedCodeRoot && expandedCodePath &&
-    (expandedCodePath === expandedCodeRoot || expandedCodePath.startsWith(expandedCodeRoot + '/'))
-  )
-
-  const handleDelete = async () => {
-    setDeleting(true)
-    try {
-      const res = await fetch(`/api/projects/${project.name}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deleteCode: isCodeInternal && deleteCode }),
-      })
-      if (!res.ok) throw new Error('Delete failed')
-      onDelete()
-    } catch (e) {
-      console.error('Delete failed:', e)
-      setDeleting(false)
-      setConfirmDelete(false)
-    }
-  }
-
-  const set = (field) => (e) => setForm(f => ({ ...f, [field]: e.target.value }))
-
-  const handleSave = async () => {
-    setSaving(true)
-    try {
-      const res = await fetch(`/api/projects/${project.name}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      })
-      if (!res.ok) throw new Error('Save failed')
-      const data = await res.json()
-      onSave(data.project)
-    } catch (e) {
-      console.error('Save failed:', e)
-    } finally {
-      setSaving(false)
-      onClose()
-    }
-  }
-
-  return (
-    <div className="settings-panel">
-      <div className="settings-header">
-        <span>Settings</span>
-        <button className="settings-close" onClick={onClose}>✕</button>
-      </div>
-
-      <label>Name<input value={form.name} onChange={set('name')} /></label>
-      <label>Description<input value={form.description} onChange={set('description')} /></label>
-      <label>Code path<input value={form.code_path} onChange={set('code_path')} placeholder="/path/to/repo or URL" /></label>
-      <label>Git backend
-        <select value={form.git_backend} onChange={set('git_backend')}>
-          {GIT_BACKENDS.map(b => <option key={b} value={b}>{GIT_LABELS[b]}</option>)}
-        </select>
-      </label>
-      <label>Git repo URL<input value={form.git_repo_url} onChange={set('git_repo_url')} placeholder="https://..." /></label>
-
-      <div className="settings-actions">
-        <button className="btn-cancel" onClick={onClose}>Cancel</button>
-        <button className="btn-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-      </div>
-
-      <div className="settings-delete-zone">
-        {!confirmDelete ? (
-          <button className="btn-delete" onClick={() => setConfirmDelete(true)}>Delete project</button>
-        ) : (
-          <div className="delete-dialog">
-            <p className="delete-dialog-title">Delete <strong>{project.name}</strong>?</p>
-            <p className="delete-dialog-body">This will permanently delete all internal project work and records:</p>
-            <ul className="delete-dialog-list">
-              <li>All tickets, comments, and sub-projects</li>
-              <li>Planning files{config.scryer_root ? ` (${config.scryer_root}/${project.name}/)` : ''}</li>
-            </ul>
-            {project.code_path && (
-              isCodeInternal ? (
-                <label className="delete-dialog-code-check">
-                  <input
-                    type="checkbox"
-                    checked={deleteCode}
-                    onChange={e => setDeleteCode(e.target.checked)}
-                  />
-                  <span>Also delete code at <code>{project.code_path}</code></span>
-                </label>
-              ) : (
-                <p className="delete-dialog-no-code">No code will be deleted — <code>{project.code_path}</code> is external.</p>
-              )
-            )}
-            <div className="delete-dialog-actions">
-              <button className="btn-cancel" onClick={() => { setConfirmDelete(false); setDeleteCode(false) }}>Cancel</button>
-              <button className="btn-delete-confirm" onClick={handleDelete} disabled={deleting}>
-                {deleting ? 'Deleting…' : 'Delete everything'}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function ProjectCard({ project: initialProject, onDelete }) {
   const [project, setProject]       = useState(initialProject)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -422,7 +289,7 @@ function ProjectCard({ project: initialProject, onDelete }) {
       </div>
 
       {settingsOpen && (
-        <SettingsPanel
+        <ProjectSettingsPanel
           project={project}
           onClose={() => setSettingsOpen(false)}
           onSave={(updated) => setProject(updated)}
@@ -432,6 +299,7 @@ function ProjectCard({ project: initialProject, onDelete }) {
     </li>
   )
 }
+
 
 export default function ProjectSelector() {
   const navigate = useNavigate()

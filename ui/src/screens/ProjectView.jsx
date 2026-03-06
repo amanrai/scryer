@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import MindMap from '../components/MindMap.jsx'
 import TerminalPanel from '../components/TerminalPanel.jsx'
+import ProjectSettingsPanel from '../components/ProjectSettingsPanel.jsx'
+import ReviewDialog from '../components/ReviewDialog.jsx'
 
 const TYPE_META = {
   state_change: { color: 'var(--blue)',   icon: '⟳' },
@@ -117,8 +119,10 @@ export default function ProjectView() {
   const [project, setProject] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
-  const [filter, setFilter]       = useState('')
-  const [logOpen, setLogOpen]     = useState(false)
+  const [filter, setFilter]           = useState('')
+  const [logOpen, setLogOpen]         = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [reviewOpen, setReviewOpen]   = useState(false)
   const [launchError, setLaunchError] = useState(null)
 
   // Terminal panel state
@@ -295,6 +299,7 @@ export default function ProjectView() {
               <button className="pv-filter-clear" onClick={() => setFilter('')}>×</button>
             )}
           </div>
+          <button className="pv-log-btn" onClick={() => setReviewOpen(o => !o)}>Review</button>
           <button className="pv-log-btn" onClick={() => setLogOpen(o => !o)}>
             {logOpen ? 'Log ▾' : 'Log ▸'}
           </button>
@@ -310,8 +315,21 @@ export default function ProjectView() {
             <button onClick={() => setLaunchError(null)}>×</button>
           </div>
         )}
-        <MindMap project={project} onLaunch={handleLaunch} filter={filter} />
+        <MindMap project={project} onLaunch={handleLaunch} onSettings={() => setSettingsOpen(true)} filter={filter} />
         {logOpen && <ActivityDialog project={project} onClose={() => setLogOpen(false)} />}
+        {reviewOpen && <ReviewDialog project={project} onClose={() => setReviewOpen(false)} />}
+        {settingsOpen && (
+          <div className="mm-modal-backdrop" onClick={() => setSettingsOpen(false)}>
+            <div className="mm-modal mm-modal--settings" onClick={e => e.stopPropagation()}>
+              <ProjectSettingsPanel
+                project={project}
+                onClose={() => setSettingsOpen(false)}
+                onSave={(updated) => { setProject(prev => ({ ...prev, ...updated })); setSettingsOpen(false) }}
+                onDelete={() => navigate('/')}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {dock !== 'left' && panel}
