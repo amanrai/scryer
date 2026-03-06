@@ -1,0 +1,614 @@
+openapi: 3.0.3
+info:
+  title: Scryer UI API
+  description: Express API server for the Scryer human-facing UI. All endpoints are under /api/.
+  version: 1.0.0
+servers:
+  - url: http://localhost:7654
+    description: Local dev server
+
+paths:
+  # ──────────────────────────────────────────────────────────
+  # Projects
+  # ──────────────────────────────────────────────────────────
+  /api/projects:
+    get:
+      summary: List root projects
+      description: Returns all root-level projects (no parent). is_default nodes are never returned.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectSummary'
+
+    post:
+      summary: Create a new root project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:        { type: string }
+                description: { type: string, default: '' }
+                code_path:   { type: string, default: '' }
+                git_backend: { type: string, enum: ['', forgejo, github, gitlab] }
+                git_repo_url:{ type: string, default: '' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project: { $ref: '#/components/schemas/ProjectSummary' }
+        '400':
+          description: Name is required
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Name already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/projects/{name}:
+    get:
+      summary: Get project detail
+      description: Returns the project with all sub-projects and tickets (recursive). Tickets include description, blocked_by, and comments.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project: { $ref: '#/components/schemas/ProjectDetail' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+    patch:
+      summary: Update project settings
+      description: Updates any subset of the project's fields. Only provided fields are changed.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:           { type: string }
+                description:    { type: string }
+                code_path:      { type: string }
+                git_backend:    { type: string, enum: ['', forgejo, github, gitlab] }
+                git_repo_url:   { type: string }
+                session_claude: { type: string }
+                session_codex:  { type: string }
+                session_gemini: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project: { $ref: '#/components/schemas/ProjectSummary' }
+        '400': { description: No fields to update, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: Not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+    delete:
+      summary: Delete a project
+      description: |
+        Deletes the project and cascades to all sub-projects, tickets, comments, and blocks.
+        Always deletes the planning folder under scryer_root.
+        Optionally deletes the code folder if deleteCode=true and it is inside code_root.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deleteCode: { type: boolean, default: false, description: Also delete the code folder if it is inside code_root }
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '404': { description: Not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/projects/{name}/sub-projects:
+    post:
+      summary: Create a sub-project
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:        { type: string }
+                description: { type: string, default: '' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sub_project:
+                    type: object
+                    properties:
+                      id:          { type: integer }
+                      name:        { type: string }
+                      description: { type: string }
+        '400': { description: Name required, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: Project not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  # ──────────────────────────────────────────────────────────
+  # Config
+  # ──────────────────────────────────────────────────────────
+  /api/config:
+    get:
+      summary: Get global config
+      description: Returns scryer_root, code_root, and the system home directory.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scryer_root: { type: string }
+                  code_root:   { type: string }
+                  home:        { type: string }
+
+    patch:
+      summary: Update global config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scryer_root: { type: string }
+                code_root:   { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scryer_root: { type: string }
+                  code_root:   { type: string }
+        '400': { description: scryer_root or code_root required, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  # ──────────────────────────────────────────────────────────
+  # Planning
+  # ──────────────────────────────────────────────────────────
+  /api/planning:
+    get:
+      summary: Get plan.md content for an entity
+      description: Resolves the entity's plan.md path (creating it if missing) and returns its content.
+      parameters:
+        - name: type
+          in: query
+          required: true
+          schema: { type: string, enum: [project, subproject, ticket] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content: { type: string }
+                  path:    { type: string }
+        '400': { description: type and id required }
+        '404': { description: Entity not found }
+
+    patch:
+      summary: Write plan.md content for an entity
+      parameters:
+        - name: type
+          in: query
+          required: true
+          schema: { type: string, enum: [project, subproject, ticket] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        '200':
+          description: Written
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+
+  /api/planning-prompt:
+    get:
+      summary: Generate planning agent startup prompt for an entity
+      description: Returns a rendered prompt string personalised to the entity (name, description, code path, planning folder).
+      parameters:
+        - name: type
+          in: query
+          required: true
+          schema: { type: string, enum: [project, subproject, ticket] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prompt: { type: string }
+        '400': { description: type and id required }
+        '404': { description: Entity not found }
+
+  /api/planning-conversations:
+    get:
+      summary: List conversation log files for an entity
+      parameters:
+        - name: type
+          in: query
+          required: true
+          schema: { type: string, enum: [project, subproject, ticket] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        filename:  { type: string }
+                        timestamp: { type: string }
+
+  /api/planning-conversations/{filename}:
+    get:
+      summary: Read a planning conversation log
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          schema: { type: string }
+        - name: type
+          in: query
+          required: true
+          schema: { type: string, enum: [project, subproject, ticket] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content:  { type: string }
+                  filename: { type: string }
+        '404': { description: Not found }
+
+  # ──────────────────────────────────────────────────────────
+  # Tickets
+  # ──────────────────────────────────────────────────────────
+  /api/tickets/{id}/comments:
+    post:
+      summary: Add a comment to a ticket
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  comment: { $ref: '#/components/schemas/Comment' }
+        '400': { description: content required }
+        '404': { description: Ticket not found }
+
+  # ──────────────────────────────────────────────────────────
+  # Activity feed
+  # ──────────────────────────────────────────────────────────
+  /api/activity:
+    get:
+      summary: Activity feed
+      description: Returns structured log entries from the logs table, newest first.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+        - name: since
+          in: query
+          description: ISO timestamp — only return entries after this time
+          schema: { type: string, format: date-time }
+        - name: project
+          in: query
+          description: Project name — scope feed to tickets under this project tree
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/ActivityEntry' }
+
+  # ──────────────────────────────────────────────────────────
+  # Screenshot drops
+  # ──────────────────────────────────────────────────────────
+  /api/drops:
+    get:
+      summary: List saved screenshots
+      description: Returns filenames from ~/Code/plane.so/drops/, newest first.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  files:
+                    type: array
+                    items: { type: string }
+
+  /api/drop:
+    post:
+      summary: Save a dropped screenshot
+      description: Saves the image to ~/Code/plane.so/drops/ with a timestamp filename.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data, filename]
+              properties:
+                data:     { type: string, description: Base64 data URL (data:image/...;base64,...) }
+                filename: { type: string }
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  saved: { type: string, description: Timestamped filename written to disk }
+        '400': { description: Missing data or filename }
+
+  # ──────────────────────────────────────────────────────────
+  # Codebase scanning / cloning
+  # ──────────────────────────────────────────────────────────
+  /api/scan-codebase:
+    get:
+      summary: Scan a local folder and extract project metadata
+      description: Reads README, package.json/pyproject.toml/Cargo.toml, and top-level directories to suggest name, description, and sub-projects.
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+          description: Local filesystem path (~ is expanded)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:         { type: string }
+                  description:  { type: string }
+                  sub_projects: { type: array, items: { type: string } }
+        '400': { description: path required, or not a directory }
+        '404': { description: Path does not exist }
+
+  /api/clone-codebase:
+    post:
+      summary: Clone a remote git repo
+      description: Runs git clone into dest and returns the result. Client should follow up with GET /api/scan-codebase.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, dest]
+              properties:
+                url:  { type: string, description: Git remote URL }
+                dest: { type: string, description: Destination path (~ expanded) }
+      responses:
+        '200':
+          description: Cloned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean }
+                  path: { type: string }
+        '400': { description: url and dest required }
+        '500': { description: git clone failed }
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+    ProjectSummary:
+      type: object
+      properties:
+        id:             { type: integer }
+        name:           { type: string }
+        description:    { type: string }
+        code_path:      { type: string }
+        git_backend:    { type: string }
+        git_repo_url:   { type: string }
+        session_claude: { type: string }
+        session_codex:  { type: string }
+        session_gemini: { type: string }
+
+    ProjectDetail:
+      allOf:
+        - $ref: '#/components/schemas/ProjectSummary'
+        - type: object
+          properties:
+            tickets:
+              type: array
+              items: { $ref: '#/components/schemas/TicketDetail' }
+            sub_projects:
+              type: array
+              items:
+                allOf:
+                  - type: object
+                    properties:
+                      id:          { type: integer }
+                      name:        { type: string }
+                      description: { type: string }
+                  - type: object
+                    properties:
+                      tickets:
+                        type: array
+                        items: { $ref: '#/components/schemas/TicketDetail' }
+
+    TicketDetail:
+      type: object
+      properties:
+        id:          { type: integer }
+        title:       { type: string }
+        description: { type: string }
+        state:       { type: string, enum: [Unopened, 'In Progress', 'Agent Finished', 'In Review', 'Needs Tests', 'Needs Input', Closed] }
+        priority:    { type: string, enum: [low, medium, high] }
+        project_id:  { type: integer }
+        blocked_by:
+          type: array
+          items:
+            type: object
+            properties:
+              id:    { type: integer }
+              title: { type: string }
+              state: { type: string }
+        comments:
+          type: array
+          items: { $ref: '#/components/schemas/Comment' }
+
+    Comment:
+      type: object
+      properties:
+        id:         { type: integer }
+        content:    { type: string }
+        created_at: { type: string, format: date-time }
+
+    ActivityEntry:
+      type: object
+      properties:
+        id:           { type: integer }
+        action:       { type: string, enum: [state_change, comment, commit] }
+        message:      { type: string }
+        details:      { type: object }
+        ticket_id:    { type: integer, nullable: true }
+        ticket_title: { type: string, nullable: true }
+        project_name: { type: string, nullable: true }
+        created_at:   { type: string, format: date-time }

@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} — PM Admin{% endblock %}
+
+{% block content %}
+
+{# ---- Breadcrumb ---- #}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="/">Projects</a></li>
+    {% if parent %}
+    <li class="breadcrumb-item"><a href="/projects/{{ parent.name }}">{{ parent.name }}</a></li>
+    {% endif %}
+    <li class="breadcrumb-item active">{{ project.name }}</li>
+  </ol>
+</nav>
+
+<div class="row g-4">
+
+  {# ---- Project info ---- #}
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-body">
+        <p class="section-header">Project</p>
+        <h4 class="mb-0">{{ project.name }}</h4>
+        <p class="text-muted mb-3">{{ project.description or 'No description.' }}</p>
+        {% if project.code_path %}
+        <p class="small mb-3"><span class="text-muted">Code path:</span>
+          <code>{{ project.code_path }}</code></p>
+        {% endif %}
+
+        {# Edit #}
+        <details class="mb-2">
+          <summary class="small text-primary" style="cursor:pointer">Edit name / description / code path</summary>
+          <form action="/projects/{{ project.name }}/update" method="POST" class="mt-2 row g-2">
+            <div class="col-12">
+              <input type="text" name="name" class="form-control form-control-sm"
+                     value="{{ project.name }}" required>
+            </div>
+            <div class="col-12">
+              <input type="text" name="description" class="form-control form-control-sm"
+                     value="{{ project.description }}">
+            </div>
+            <div class="col-12">
+              <input type="text" name="code_path" class="form-control form-control-sm"
+                     placeholder="Code path" value="{{ project.code_path }}">
+            </div>
+            <div class="col-auto">
+              <button class="btn btn-sm btn-primary">Save</button>
+            </div>
+          </form>
+        </details>
+
+        {# Set parent #}
+        <details class="mb-2">
+          <summary class="small text-primary" style="cursor:pointer">Change parent</summary>
+          <form action="/projects/{{ project.name }}/set-parent" method="POST" class="mt-2 row g-2">
+            <div class="col-9">
+              <select name="parent_name" class="form-select form-select-sm">
+                <option value="">— none (root) —</option>
+                {% for p in all_projects %}
+                {% if p.name != project.name %}
+                <option value="{{ p.name }}" {% if parent and parent.name == p.name %}selected{% endif %}>
+                  {{ p.path }}
+                </option>
+                {% endif %}
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-3">
+              <button class="btn btn-sm btn-secondary w-100">Set</button>
+            </div>
+          </form>
+        </details>
+
+        {# Delete #}
+        <form action="/projects/{{ project.name }}/delete" method="POST" class="mt-3"
+              onsubmit="return confirm('Delete {{ project.name }} and everything inside it?')">
+          {% if parent %}
+          <input type="hidden" name="next" value="/projects/{{ parent.name }}">
+          {% endif %}
+          <button class="btn btn-sm btn-outline-danger">Delete project</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# ---- Sub-projects ---- #}
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-body">
+        <p class="section-header">Sub-projects</p>
+
+        {# Create #}
+        <form action="/projects/{{ project.name }}/sub-projects/create" method="POST"
+              class="row g-2 mb-3">
+          <div class="col-5">
+            <input type="text" name="name" class="form-control form-control-sm" placeholder="Name" required>
+          </div>
+          <div class="col-5">
+            <input type="text" name="description" class="form-control form-control-sm" placeholder="Description">
+          </div>
+          <div class="col-2">
+            <button class="btn btn-sm btn-primary w-100">Add</button>
+          </div>
+        </form>
+
+        {% if not sub_projects %}
+        <p class="text-muted small mb-0">No sub-projects.</p>
+        {% else %}
+        {% for sp in sub_projects %}
+        <div class="border rounded p-2 mb-2">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <a href="/projects/{{ sp.name }}" class="fw-semibold text-decoration-none">{{ sp.name }}</a>
+              {% if sp.description %}
+              <span class="text-muted small ms-2">{{ sp.description }}</span>
+              {% endif %}
+            </div>
+            <form action="/projects/{{ sp.name }}/delete" method="POST"
+                  onsubmit="return confirm('Delete {{ sp.name }}?')" class="ms-2">
+              <input type="hidden" name="next" value="/projects/{{ project.name }}">
+              <button class="btn btn-outline-danger btn-sm py-0">×</button>
+            </form>
+          </div>
+          {# Inline edit for sub-project #}
+          <details class="mt-1">
+            <summary class="small text-muted" style="cursor:pointer">Edit</summary>
+            <form action="/projects/{{ sp.name }}/update" method="POST" class="mt-1 row g-1">
+              <div class="col-5">
+                <input type="text" name="name" class="form-control form-control-sm"
+                       value="{{ sp.name }}" required>
+              </div>
+              <div class="col-5">
+                <input type="text" name="description" class="form-control form-control-sm"
+                       value="{{ sp.description }}">
+              </div>
+              <div class="col-2">
+                <button class="btn btn-sm btn-secondary w-100">Save</button>
+              </div>
+            </form>
+          </details>
+        </div>
+        {% endfor %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ---- Tickets ---- #}
+  <div class="col-12">
+    <div class="card">
+      <div class="card-body">
+        <p class="section-header">Tickets</p>
+
+        {# Create ticket #}
+        <form action="/tickets/create" method="POST" class="row g-2 mb-3 align-items-end">
+          <input type="hidden" name="project_name" value="{{ project.name }}">
+          <input type="hidden" name="next" value="/projects/{{ project.name }}">
+          <input type="hidden" name="state" value="Unopened">
+          <div class="col-sm-7">
+            <input type="text" name="title" class="form-control form-control-sm"
+                   placeholder="Ticket title" required>
+          </div>
+          <div class="col-sm-2">
+            <select name="sub_project_name" class="form-select form-select-sm">
+              <option value="">— this project —</option>
+              {% for sp in sub_projects %}
+              <option value="{{ sp.name }}">{{ sp.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-sm-1">
+            <button class="btn btn-primary btn-sm w-100">Add</button>
+          </div>
+        </form>
+
+        {% if not tickets %}
+        <p class="text-muted small mb-0">No tickets yet.</p>
+        {% else %}
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light">
+            <tr><th>#</th><th>Title</th><th>State</th><th>Location</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for t in tickets %}
+            <tr>
+              <td class="text-muted small">{{ t.id }}</td>
+              <td><a href="/tickets/{{ t.id }}" class="text-decoration-none">{{ t.title }}</a></td>
+              <td>
+                <span class="badge bg-{{ state_colors.get(t.state, 'secondary') }}">{{ t.state }}</span>
+              </td>
+              <td class="text-muted small">{{ t.location or '—' }}</td>
+              <td class="text-end">
+                <form action="/tickets/{{ t.id }}/delete" method="POST" class="d-inline"
+                      onsubmit="return confirm('Delete this ticket?')">
+                  <input type="hidden" name="next" value="/projects/{{ project.name }}">
+                  <button class="btn btn-outline-danger btn-sm py-0">×</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

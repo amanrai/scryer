@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Settings — PM Admin{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-body">
+        <p class="section-header">Server bind</p>
+        <p class="small text-muted mb-3">
+          Currently bound to <code>{{ cfg.host }}:{{ cfg.port }}</code>.
+          Applying a change will restart the server.
+        </p>
+
+        <form action="/settings/bind" method="POST">
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Interface</label>
+            {% for value, label in interfaces %}
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="host"
+                     id="iface_{{ loop.index }}" value="{{ value }}"
+                     {% if value == cfg.host %}checked{% endif %}>
+              <label class="form-check-label small" for="iface_{{ loop.index }}">
+                {{ label }}
+              </label>
+            </div>
+            {% endfor %}
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Port</label>
+            <input type="number" name="port" class="form-control form-control-sm"
+                   value="{{ cfg.port }}" min="1024" max="65535" style="max-width:120px">
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-sm">Apply &amp; Restart</button>
+          <a href="/" class="btn btn-outline-secondary btn-sm ms-2">Cancel</a>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

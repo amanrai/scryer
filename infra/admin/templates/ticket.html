@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}#{{ ticket.id }} {{ ticket.title }} — PM Admin{% endblock %}
+
+{% block content %}
+
+{# ---- Breadcrumb ---- #}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="/">Projects</a></li>
+    {% set parts = ticket.location.split(' > ') if ticket.location else [] %}
+    {% for part in parts %}
+      {% if not loop.last %}
+      <li class="breadcrumb-item"><a href="/projects/{{ part }}">{{ part }}</a></li>
+      {% else %}
+      <li class="breadcrumb-item active">{{ part }}</li>
+      {% endif %}
+    {% endfor %}
+    <li class="breadcrumb-item active">#{{ ticket.id }}</li>
+  </ol>
+</nav>
+
+<div class="row g-4">
+
+  {# ---- Ticket detail ---- #}
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <h4 class="mb-0">{{ ticket.title }}</h4>
+          <div>
+            <span class="badge bg-{{ state_colors.get(ticket.state, 'secondary') }}">{{ ticket.state }}</span>
+          </div>
+        </div>
+        <p class="text-muted mb-3">{{ ticket.description or 'No description.' }}</p>
+
+        <details>
+          <summary class="small text-primary" style="cursor:pointer">Edit ticket</summary>
+          <form action="/tickets/{{ ticket.id }}/update" method="POST" class="mt-2 row g-2">
+            <div class="col-12">
+              <input type="text" name="title" class="form-control form-control-sm"
+                     value="{{ ticket.title }}" required>
+            </div>
+            <div class="col-12">
+              <textarea name="description" class="form-control form-control-sm"
+                        rows="3">{{ ticket.description }}</textarea>
+            </div>
+            <div class="col-10">
+              <select name="state" class="form-select form-select-sm">
+                {% for s in valid_states %}
+                <option value="{{ s }}" {% if s == ticket.state %}selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-2">
+              <button class="btn btn-sm btn-primary w-100">Save</button>
+            </div>
+          </form>
+        </details>
+
+        <hr>
+
+        {# Move #}
+        <details class="mb-2">
+          <summary class="small text-primary" style="cursor:pointer">Move ticket</summary>
+          <form action="/tickets/{{ ticket.id }}/move" method="POST" class="mt-2 row g-2">
+            <div class="col-8">
+              <select name="project_name" class="form-select form-select-sm" required>
+                <option value="">— select project —</option>
+                {% for p in all_projects %}
+                <option value="{{ p.name }}">{{ p.path }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-4">
+              <button class="btn btn-sm btn-secondary w-100">Move</button>
+            </div>
+          </form>
+        </details>
+
+        {# Delete #}
+        <form action="/tickets/{{ ticket.id }}/delete" method="POST"
+              onsubmit="return confirm('Delete this ticket?')" class="mt-2">
+          <button class="btn btn-sm btn-outline-danger">Delete ticket</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# ---- Dependencies ---- #}
+  <div class="col-lg-5">
+    <div class="card">
+      <div class="card-body">
+        <p class="section-header">Dependencies</p>
+
+        {# Blocks #}
+        <p class="small fw-semibold mb-1">This ticket blocks:</p>
+        {% if ticket.blocks %}
+        {% for b in ticket.blocks %}
+        <div class="d-flex align-items-center justify-content-between mb-1">
+          <a href="/tickets/{{ b.id }}" class="small text-decoration-none">
+            #{{ b.id }} {{ b.title }}
+            <span class="badge bg-{{ state_colors.get(b.state, 'secondary') }} ms-1">{{ b.state }}</span>
+          </a>
+          <form action="/tickets/{{ ticket.id }}/blocks/remove" method="POST" class="ms-2">
+            <input type="hidden" name="other_ticket_id" value="{{ b.id }}">
+            <input type="hidden" name="direction" value="blocks">
+            <button class="btn btn-outline-secondary btn-sm py-0">×</button>
+          </form>
+        </div>
+        {% endfor %}
+        {% else %}
+        <p class="text-muted small">None.</p>
+        {% endif %}
+
+        {# Blocked by #}
+        <p class="small fw-semibold mb-1 mt-2">Blocked by:</p>
+        {% if ticket.blocked_by %}
+        {% for b in ticket.blocked_by %}
+        <div class="d-flex align-items-center justify-content-between mb-1">
+          <a href="/tickets/{{ b.id }}" class="small text-decoration-none">
+            #{{ b.id }} {{ b.title }}
+            <span class="badge bg-{{ state_colors.get(b.state, 'secondary') }} ms-1">{{ b.state }}</span>
+          </a>
+          <form action="/tickets/{{ ticket.id }}/blocks/remove" method="POST" class="ms-2">
+            <input type="hidden" name="other_ticket_id" value="{{ b.id }}">
+            <input type="hidden" name="direction" value="blocked_by">
+            <button class="btn btn-outline-secondary btn-sm py-0">×</button>
+          </form>
+        </div>
+        {% endfor %}
+        {% else %}
+        <p class="text-muted small">None.</p>
+        {% endif %}
+
+        {# Add dependency #}
+        <hr>
+        <p class="small fw-semibold mb-1">Add dependency:</p>
+        <form action="/tickets/{{ ticket.id }}/blocks/add" method="POST" class="row g-2">
+          <div class="col-6">
+            <select name="other_ticket_id" class="form-select form-select-sm" required>
+              <option value="">— ticket —</option>
+              {% for t in all_tickets %}
+              <option value="{{ t.id }}">#{{ t.id }} {{ t.title[:30] }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-3">
+            <select name="direction" class="form-select form-select-sm">
+              <option value="blocks">I block it</option>
+              <option value="blocked_by">It blocks me</option>
+            </select>
+          </div>
+          <div class="col-3">
+            <button class="btn btn-sm btn-secondary w-100">Add</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# ---- Comments ---- #}
+  <div class="col-12">
+    <div class="card">
+      <div class="card-body">
+        <p class="section-header">Comments</p>
+
+        {% if not ticket.comments %}
+        <p class="text-muted small">No comments yet.</p>
+        {% else %}
+        {% for c in ticket.comments %}
+        <div class="comment-block">
+          <div class="d-flex justify-content-between align-items-start">
+            <span class="comment-text small">{{ c.content }}</span>
+            <div class="ms-3 d-flex gap-1 flex-shrink-0">
+              <button class="edit-toggle btn btn-outline-secondary btn-sm py-0">Edit</button>
+              <form action="/comments/{{ c.id }}/delete" method="POST"
+                    onsubmit="return confirm('Delete this comment and all replies?')">
+                <input type="hidden" name="ticket_id" value="{{ ticket.id }}">
+                <button class="btn btn-outline-danger btn-sm py-0">×</button>
+              </form>
+            </div>
+          </div>
+          <form action="/comments/{{ c.id }}/update" method="POST" class="edit-form mt-1 row g-1">
+            <input type="hidden" name="ticket_id" value="{{ ticket.id }}">
+            <div class="col-10">
+              <textarea name="content" class="form-control form-control-sm" rows="2">{{ c.content }}</textarea>
+            </div>
+            <div class="col-2">
+              <button class="btn btn-sm btn-primary w-100">Save</button>
+            </div>
+          </form>
+          <span class="text-muted" style="font-size:.7rem">{{ c.created_at[:16] }}</span>
+        </div>
+        {% endfor %}
+        {% endif %}
+
+        {# Add comment #}
+        <form action="/tickets/{{ ticket.id }}/comments/create" method="POST"
+              class="row g-2 mt-2">
+          <div class="col-10">
+            <textarea name="content" class="form-control form-control-sm" rows="2"
+                      placeholder="Add a comment…" required></textarea>
+          </div>
+          <div class="col-2 d-flex align-items-end">
+            <button class="btn btn-primary btn-sm w-100">Post</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

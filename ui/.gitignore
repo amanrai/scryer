@@ -1,0 +1,9 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local env overrides
+.env.local
+.env.*.local

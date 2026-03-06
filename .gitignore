@@ -1,0 +1,45 @@
+# Environment & secrets
+.env
+.env.*
+claims.json
+
+# Claude Code local config
+.claude/
+
+# Drops (screenshots / uploads)
+drops/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+
+# SQLite databases
+*.db
+*.sqlite3
+
+# PID files
+*.pid
+
+# Node
+node_modules/
+dist/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo

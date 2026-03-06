@@ -1,0 +1,5 @@
+# SQLite database — stateful, not for version control
+ProjectManagement/data/pm.db
+
+# PID file written by admin server at runtime
+admin/server.pid

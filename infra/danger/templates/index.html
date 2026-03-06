@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin Server</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #111; min-height: 100vh; padding: 2rem 1rem; }
+    .panel { max-width: 520px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+<div class="panel">
+  <h5 class="text-white-50 mb-4 fw-normal">Admin Server</h5>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+    <div class="alert alert-{{ category }} py-2 small">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  {# ---- User server bind ---- #}
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span class="fw-semibold">User server</span>
+      {% if running %}
+      <span class="badge bg-success">running — {{ cfg.host }}:{{ cfg.port }}</span>
+      {% else %}
+      <span class="badge bg-secondary">stopped</span>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      <form action="/bind" method="POST">
+        <p class="small text-muted mb-2">Bind interface</p>
+        {% for value, label in interfaces %}
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="host"
+                 id="iface_{{ loop.index }}" value="{{ value }}"
+                 {% if value == cfg.host %}checked{% endif %}>
+          <label class="form-check-label small" for="iface_{{ loop.index }}">{{ label }}</label>
+        </div>
+        {% endfor %}
+
+        <div class="mt-3 mb-3 row g-2 align-items-center">
+          <label class="col-auto small text-muted">Port</label>
+          <div class="col-auto">
+            <input type="number" name="port" class="form-control form-control-sm"
+                   value="{{ cfg.port }}" min="1024" max="65535" style="width:100px">
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-sm">Apply &amp; Restart</button>
+      </form>
+    </div>
+  </div>
+
+  {# ---- Danger ---- #}
+  <div class="card border-danger">
+    <div class="card-header bg-danger text-white fw-semibold">⚠ Danger zone</div>
+    <div class="card-body">
+      <p class="small text-muted mb-3">
+        Drops all tables and reinitialises the database. Cannot be undone.
+      </p>
+      <form action="/reset" method="POST">
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">Type <code>RESET</code> to confirm</label>
+          <input type="text" name="confirm" class="form-control form-control-sm border-danger"
+                 placeholder="RESET" autocomplete="off">
+        </div>
+        <button type="submit" class="btn btn-danger btn-sm w-100">Wipe &amp; Reinitialise</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>tmux sessions</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: #0d0d0d;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      overflow: hidden;
+    }
+
+    /* ── Layout ── */
+    #app {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      background: #111;
+      border-right: 1px solid #222;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #sidebar-header {
+      padding: 14px 14px 10px;
+      border-bottom: 1px solid #222;
+    }
+
+    #sidebar-header h1 {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #555;
+      margin-bottom: 8px;
+    }
+
+    #preflight {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 6px;
+      margin-bottom: 10px;
+    }
+
+    .pf-badge {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      color: #4b5563;
+    }
+    .pf-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #374151;
+      flex-shrink: 0;
+    }
+    .pf-dot.ok  { background: #22c55e; }
+    .pf-dot.err { background: #ef4444; }
+
+    .spawn-btns {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .spawn-btn {
+      width: 100%;
+      padding: 7px 12px;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: left;
+      transition: background 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .spawn-btn .agent-icon { font-size: 13px; }
+    .spawn-btn.claude  { background: #1a3a2a; color: #4ade80; }
+    .spawn-btn.claude:hover  { background: #166534; }
+    .spawn-btn.codex   { background: #1a1a3a; color: #818cf8; }
+    .spawn-btn.codex:hover   { background: #312e81; }
+    .spawn-btn.gemini  { background: #2a1a1a; color: #fb923c; }
+    .spawn-btn.gemini:hover  { background: #7c2d12; }
+
+    #session-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+
+    .session-item {
+      padding: 8px 14px;
+      cursor: pointer;
+      border-left: 2px solid transparent;
+      transition: background 0.1s;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .session-item:hover { background: #1a1a1a; }
+    .session-item.active {
+      background: #1a2a3a;
+      border-left-color: #2563eb;
+    }
+
+    .session-name {
+      font-size: 12px;
+      font-weight: 500;
+      color: #e0e0e0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .session-name .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #374151;
+      flex-shrink: 0;
+    }
+    .session-name .dot.live { background: #22c55e; }
+
+    .session-meta {
+      font-size: 10px;
+      color: #4b5563;
+      padding-left: 12px;
+    }
+
+    .session-actions {
+      display: flex;
+      gap: 4px;
+      padding-left: 12px;
+      margin-top: 4px;
+    }
+
+    .btn-xs {
+      padding: 2px 8px;
+      font-size: 10px;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .btn-attach { background: #1e3a5f; color: #60a5fa; }
+    .btn-attach:hover { background: #1d4ed8; color: #fff; }
+    .btn-kill   { background: #3b1a1a; color: #f87171; }
+    .btn-kill:hover { background: #991b1b; color: #fff; }
+
+    #no-sessions {
+      padding: 20px 14px;
+      font-size: 11px;
+      color: #374151;
+      text-align: center;
+    }
+
+    #sidebar-footer {
+      padding: 10px 14px;
+      border-top: 1px solid #222;
+      font-size: 10px;
+      color: #374151;
+    }
+
+    /* ── Main panel ── */
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    #topbar {
+      height: 40px;
+      background: #1a1a1a;
+      border-bottom: 1px solid #222;
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    #session-label {
+      font-size: 12px;
+      color: #6b7280;
+      flex: 1;
+    }
+    #session-label.active { color: #22c55e; }
+
+    #detach-btn {
+      padding: 4px 12px;
+      background: #1f2937;
+      color: #9ca3af;
+      border: 1px solid #374151;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      display: none;
+    }
+    #detach-btn:hover { background: #374151; color: #e0e0e0; }
+    #detach-btn.visible { display: block; }
+
+    #terminal-wrap {
+      flex: 1;
+      padding: 8px;
+      min-height: 0;
+      position: relative;
+    }
+
+    #terminal { width: 100%; height: 100%; }
+
+    #splash {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 8px;
+      color: #374151;
+      font-size: 13px;
+      pointer-events: none;
+    }
+    #splash.hidden { display: none; }
+
+    .xterm-viewport::-webkit-scrollbar { display: none; }
+
+    /* ── Launch modal ── */
+    #modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    #modal-overlay.open { display: flex; }
+
+    #modal {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      width: 560px;
+      max-width: 90vw;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      overflow: hidden;
+    }
+
+    #modal-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid #222;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    #modal-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #e0e0e0;
+    }
+
+    #modal-close {
+      background: none;
+      border: none;
+      color: #4b5563;
+      font-size: 18px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    #modal-close:hover { color: #e0e0e0; }
+
+    #modal-body { padding: 14px 16px; }
+
+    #modal-textarea {
+      width: 100%;
+      height: 260px;
+      background: #0d0d0d;
+      border: 1px solid #2a2a2a;
+      border-radius: 5px;
+      color: #e0e0e0;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      padding: 10px 12px;
+      resize: vertical;
+      outline: none;
+    }
+    #modal-textarea:focus { border-color: #3b82f6; }
+    #modal-textarea::placeholder { color: #374151; }
+
+    #modal-footer {
+      padding: 12px 16px;
+      border-top: 1px solid #222;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .modal-btn {
+      padding: 7px 18px;
+      border: none;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .modal-btn.cancel { background: #1f2937; color: #9ca3af; }
+    .modal-btn.cancel:hover { background: #374151; }
+    .modal-btn.restricted { background: #1e3a5f; color: #93c5fd; }
+    .modal-btn.restricted:hover { background: #1d4ed8; color: #fff; }
+    .modal-btn.skip { background: #3b1a1a; color: #fca5a5; }
+    .modal-btn.skip:hover { background: #991b1b; color: #fff; }
+    .modal-btn.combined { background: #1a2a1a; color: #86efac; }
+    .modal-btn.combined:hover { background: #166534; color: #fff; }
+
+    #modal-perms {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #222;
+    }
+
+    #modal-delay-row {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #222;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    #modal-delay-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: #4b5563;
+      white-space: nowrap;
+      min-width: 110px;
+    }
+
+    #modal-delay {
+      flex: 1;
+      accent-color: #2563eb;
+    }
+
+    #modal-perms-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: #4b5563;
+      margin-bottom: 8px;
+    }
+
+    #modal-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .perm-chip {
+      padding: 3px 10px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid #2a2a2a;
+      background: #111;
+      color: #4b5563;
+      transition: all 0.12s;
+      user-select: none;
+    }
+    .perm-chip.on {
+      background: #1e3a5f;
+      border-color: #2563eb;
+      color: #93c5fd;
+    }
+    .perm-chip.on:hover { background: #1d4ed8; border-color: #3b82f6; color: #fff; }
+    .perm-chip:not(.on):hover { background: #1a1a1a; color: #9ca3af; }
+  </style>
+</head>
+<body>
+<!-- Launch modal -->
+<div id="modal-overlay">
+  <div id="modal">
+    <div id="modal-header">
+      <span id="modal-title">Launch agent</span>
+      <button id="modal-close">&times;</button>
+    </div>
+    <div id="modal-body">
+      <textarea id="modal-textarea" placeholder="Paste task instructions (markdown)…"></textarea>
+      <div id="modal-perms">
+        <div id="modal-perms-label">Allowed tools</div>
+        <div id="modal-chips"></div>
+      </div>
+      <div id="modal-delay-row">
+        <label id="modal-delay-label" for="modal-delay">Input delay: <span id="modal-delay-val">5</span>s</label>
+        <input type="range" id="modal-delay" min="3" max="30" value="5" step="1" />
+      </div>
+    </div>
+    <div id="modal-footer">
+      <button class="modal-btn cancel" id="modal-cancel">Cancel</button>
+      <button class="modal-btn combined" id="modal-launch-combined">Launch</button>
+    </div>
+  </div>
+</div>
+
+<div id="app">
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h1>tmux sessions</h1>
+      <div class="spawn-btns">
+        <button class="spawn-btn claude"  data-agent="claude">  <span class="agent-icon">◆</span> Claude</button>
+        <button class="spawn-btn codex"   data-agent="codex">   <span class="agent-icon">◆</span> Codex</button>
+        <button class="spawn-btn gemini"  data-agent="gemini">  <span class="agent-icon">◆</span> Gemini</button>
+      </div>
+    </div>
+    <div id="session-list">
+      <div id="no-sessions">No sessions</div>
+    </div>
+    <div id="sidebar-footer" id="ws-status">connecting…</div>
+  </div>
+
+  <!-- Main -->
+  <div id="main">
+    <div id="topbar">
+      <span id="session-label">no session attached</span>
+      <button id="detach-btn">Detach</button>
+    </div>
+    <div id="terminal-wrap">
+      <div id="splash">Select a session or spawn a new one</div>
+      <div id="terminal"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+<script>
+  const spawnBtns    = document.querySelectorAll('.spawn-btn');
+  const detachBtn    = document.getElementById('detach-btn');
+  const sessionLabel = document.getElementById('session-label');
+  const sessionList  = document.getElementById('session-list');
+  const noSessions   = document.getElementById('no-sessions');
+  const splash       = document.getElementById('splash');
+  const wsStatus     = document.getElementById('sidebar-footer');
+
+  let activeSession = null;
+
+  // ── xterm ──
+  const term = new Terminal({
+    cursorBlink: true,
+    fontSize: 14,
+    fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
+    theme: {
+      background: '#0d0d0d',
+      foreground: '#e0e0e0',
+      cursor: '#e0e0e0',
+      selectionBackground: '#3b82f640',
+    },
+    scrollback: 5000,
+    allowProposedApi: true,
+  });
+
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(document.getElementById('terminal'));
+  fitAddon.fit();
+
+  // ── socket ──
+  const socket = io({ transports: ['websocket', 'polling'] });
+
+  socket.on('connect', () => {
+    wsStatus.textContent = 'connected';
+  });
+
+  socket.on('disconnect', () => {
+    wsStatus.textContent = 'disconnected';
+    setAttached(null);
+    spawnBtns.forEach(b => b.disabled = false);
+  });
+
+  socket.on('session_list', (list) => {
+    renderSessionList(list);
+  });
+
+  socket.on('attached', ({ session }) => {
+    setAttached(session);
+    term.focus();
+  });
+
+  socket.on('detached', () => {
+    setAttached(null);
+    term.clear();
+  });
+
+  socket.on('output', (data) => {
+    term.write(data);
+  });
+
+  socket.on('session_ended', () => {
+    setAttached(null);
+    term.writeln('\r\n\x1b[33m[session closed]\x1b[0m');
+    socket.emit('list_sessions');
+  });
+
+  // ── actions ──
+  // ── Modal ──
+  const modalOverlay = document.getElementById('modal-overlay');
+  const modalTitle   = document.getElementById('modal-title');
+  const modalTextarea= document.getElementById('modal-textarea');
+  const modalCancel           = document.getElementById('modal-cancel');
+  const modalClose            = document.getElementById('modal-close');
+  const modalChips   = document.getElementById('modal-chips');
+  const modalDelay   = document.getElementById('modal-delay');
+  const modalDelayVal= document.getElementById('modal-delay-val');
+
+  modalDelay.addEventListener('input', () => {
+    modalDelayVal.textContent = modalDelay.value;
+  });
+
+  const TOOLS = [
+    { id: 'ls',        label: 'ls' },
+    { id: 'rg',        label: 'rg' },
+    { id: 'find',      label: 'find' },
+    { id: 'lsof',      label: 'lsof' },
+    { id: 'python3',   label: 'python3' },
+    { id: 'python',    label: 'python' },
+    { id: 'pip',       label: 'pip' },
+    { id: 'WebSearch', label: 'WebSearch' },
+  ];
+
+  // Render chips — all on by default
+  const chipState = Object.fromEntries(TOOLS.map(t => [t.id, true]));
+  TOOLS.forEach(({ id, label }) => {
+    const chip = document.createElement('span');
+    chip.className = 'perm-chip on';
+    chip.textContent = label;
+    chip.dataset.id = id;
+    chip.addEventListener('click', () => {
+      chipState[id] = !chipState[id];
+      chip.classList.toggle('on', chipState[id]);
+    });
+    modalChips.appendChild(chip);
+  });
+
+  let pendingAgent = null;
+
+  spawnBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      pendingAgent = btn.dataset.agent;
+      const label = btn.dataset.agent.charAt(0).toUpperCase() + btn.dataset.agent.slice(1);
+      modalTitle.textContent = `Launch ${label}`;
+      modalTextarea.value = '';
+      modalOverlay.classList.add('open');
+      modalTextarea.focus();
+    });
+  });
+
+  function closeModal() {
+    modalOverlay.classList.remove('open');
+    pendingAgent = null;
+  }
+
+  modalClose.addEventListener('click', closeModal);
+  modalCancel.addEventListener('click', closeModal);
+  modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
+
+  function doLaunch(mode) {
+    if (!pendingAgent) return;
+    const allowedTools = TOOLS.filter(t => chipState[t.id]).map(t => t.id);
+    socket.emit('spawn', {
+      agent: pendingAgent,
+      markdown: modalTextarea.value.trim(),
+      allowed_tools: allowedTools,
+      permissions_mode: mode,
+      input_delay: parseInt(modalDelay.value),
+      cols: term.cols,
+      rows: term.rows,
+    });
+    socket.emit('list_sessions');
+    closeModal();
+  }
+
+  const modalLaunchCombined = document.getElementById('modal-launch-combined');
+  modalLaunchCombined.addEventListener('click', () => doLaunch('combined'));
+
+  modalTextarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  detachBtn.addEventListener('click', () => {
+    socket.emit('detach');
+  });
+
+  term.onData((data) => {
+    if (activeSession) socket.emit('input', data);
+  });
+
+  // ── resize ──
+  const ro = new ResizeObserver(() => {
+    fitAddon.fit();
+    if (activeSession) {
+      socket.emit('resize', { cols: term.cols, rows: term.rows });
+    }
+  });
+  ro.observe(document.getElementById('terminal-wrap'));
+
+  // ── auto-refresh session list ──
+  setInterval(() => {
+    socket.emit('list_sessions');
+  }, 3000);
+
+  // ── helpers ──
+  function setAttached(name) {
+    activeSession = name;
+    if (name) {
+      sessionLabel.textContent = name;
+      sessionLabel.className = 'active';
+      detachBtn.classList.add('visible');
+      splash.classList.add('hidden');
+    } else {
+      sessionLabel.textContent = 'no session attached';
+      sessionLabel.className = '';
+      detachBtn.classList.remove('visible');
+      splash.classList.remove('hidden');
+    }
+    // re-highlight list
+    document.querySelectorAll('.session-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.name === name);
+    });
+  }
+
+  function renderSessionList(list) {
+    if (!list || list.length === 0) {
+      sessionList.innerHTML = '';
+      sessionList.appendChild(noSessions);
+      noSessions.style.display = '';
+      return;
+    }
+    noSessions.style.display = 'none';
+
+    // Keep track of existing items to avoid flicker
+    const existing = new Map();
+    sessionList.querySelectorAll('.session-item').forEach(el => {
+      existing.set(el.dataset.name, el);
+    });
+
+    const names = new Set(list.map(s => s.name));
+
+    // Remove stale
+    existing.forEach((el, name) => {
+      if (!names.has(name)) el.remove();
+    });
+
+    list.forEach(s => {
+      let item = existing.get(s.name);
+      if (!item) {
+        item = document.createElement('div');
+        item.className = 'session-item';
+        item.dataset.name = s.name;
+        sessionList.appendChild(item);
+      }
+
+      item.classList.toggle('active', s.name === activeSession);
+      item.innerHTML = `
+        <div class="session-name">
+          <span class="dot ${s.attached ? 'live' : ''}"></span>
+          ${esc(s.name)}
+        </div>
+        <div class="session-meta">${s.windows}w · created ${esc(s.created)}</div>
+        <div class="session-actions">
+          <button class="btn-xs btn-attach" data-name="${esc(s.name)}">Attach</button>
+          <button class="btn-xs btn-kill"   data-name="${esc(s.name)}">Kill</button>
+        </div>
+      `;
+    });
+
+    // Event delegation on the list
+    sessionList.onclick = (e) => {
+      const attachBtn = e.target.closest('.btn-attach');
+      const killBtn   = e.target.closest('.btn-kill');
+      if (attachBtn) {
+        const name = attachBtn.dataset.name;
+        if (name === activeSession) return;
+        socket.emit('attach', { session: name, cols: term.cols, rows: term.rows });
+      }
+      if (killBtn) {
+        const name = killBtn.dataset.name;
+        if (name === activeSession) socket.emit('detach');
+        socket.emit('kill_session', { session: name });
+      }
+    };
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+</script>
+</body>
+</html>
