@@ -17,6 +17,24 @@
   --purple:     #c678dd;
 }
 
+[data-theme="light"] {
+  --bg:         #f5f5f5;
+  --bg-panel:   #ffffff;
+  --bg-input:   #efefef;
+  --bg-hover:   #e8e8e8;
+  --bg-active:  #dde4ed;
+  --border:     #d0d5dd;
+  --border-sub: #e2e6ec;
+  --text:       #383a42;
+  --text-bright:#1a1a1a;
+  --text-muted: #9a9a9a;
+  --blue:       #4078c0;
+  --green:      #50a14f;
+  --yellow:     #c18401;
+  --red:        #e45649;
+  --purple:     #a626a4;
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {

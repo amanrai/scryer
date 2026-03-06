@@ -4,6 +4,7 @@ import sys
 from mcp.server.fastmcp import FastMCP
 import db
 
+
 db.init_db()
 
 mcp = FastMCP("ProjectManagement")
@@ -255,7 +256,7 @@ def update_ticket(
         redirected = True
 
     try:
-        ticket = db.update_ticket(ticket_id, title=title, description=description, state=effective_state, priority=priority)
+        ticket = db.update_ticket(ticket_id, actor=role or "human", title=title, description=description, state=effective_state, priority=priority)
         result = {"status": "updated", "ticket": ticket}
         if redirected:
             result["note"] = "state='Closed' redirected to 'In Review' — only a human can close tickets"
@@ -289,7 +290,10 @@ def add_comment(ticket_id: int, content: str, session_id: str | None = None) -> 
                     "session_id": session_id,
                 })
     try:
-        comment = db.add_comment(ticket_id, content)
+        comment = db.add_comment(ticket_id, content, actor="agent")
+        ticket  = db.get_ticket(ticket_id)
+        if ticket:
+            _notify_bot("comment", ticket, content[:200] + ("\u2026" if len(content) > 200 else ""))
         return json.dumps({"status": "created", "comment": comment})
     except ValueError as e:
         return json.dumps({"status": "error", "message": str(e)})

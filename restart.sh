@@ -8,7 +8,7 @@ TMUX=/opt/homebrew/bin/tmux
 echo "==> Stopping existing services…"
 
 # Kill named tmux sessions if they exist
-for session in scryer-ui scryer-tmux; do
+for session in scryer-ui scryer-tmux scryer-bot; do
   if $TMUX has-session -t "$session" 2>/dev/null; then
     $TMUX kill-session -t "$session"
     echo "    killed tmux session: $session"
@@ -37,6 +37,11 @@ echo "    scryer-ui    │ npm run dev        │ :3000 (Vite), :7654 (Express)"
 $TMUX new-session -d -s scryer-tmux -c "$REPO/tmux_test" 'python server.py'
 echo "    scryer-tmux  │ python server.py   │ :5055"
 
+# Discord bot
+BOT_CMD='source messaging/venv/bin/activate 2>/dev/null || true; python messaging/bot.py'
+$TMUX new-session -d -s scryer-bot -c "$REPO" "$BOT_CMD"
+echo "    scryer-bot   │ python messaging/bot.py"
+
 echo ""
 echo "All services running."
 echo ""
@@ -47,3 +52,4 @@ echo ""
 echo "  Attach to logs:"
 echo "    tmux attach -t scryer-ui"
 echo "    tmux attach -t scryer-tmux"
+echo "    tmux attach -t scryer-bot"

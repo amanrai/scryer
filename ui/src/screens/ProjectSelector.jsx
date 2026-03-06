@@ -1,20 +1,38 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ProjectSettingsPanel from '../components/ProjectSettingsPanel.jsx'
+import { useTheme } from '../App.jsx'
 
 const GIT_BACKENDS = ['', 'forgejo', 'github', 'gitlab']
+const ORACLE_PROVIDERS = ['claude', 'gemini', 'codex']
+const ORACLE_MODELS = {
+  claude: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6', 'claude-opus-4-6'],
+  gemini: ['gemini-2.0-flash', 'gemini-2.0-pro'],
+  codex: ['o4-mini', 'gpt-4o'],
+}
 const GIT_LABELS   = { '': '— none —', forgejo: 'Internal Forgejo', github: 'GitHub', gitlab: 'GitLab' }
 const AGENTS       = ['claude', 'codex', 'gemini']
 
 function GlobalConfigPanel({ onClose }) {
-  const [form, setForm]   = useState({ scryer_root: '', code_root: '' })
+  const [form, setForm]   = useState({ scryer_root: '', code_root: '', discord_token: '', discord_server_id: '', oracle_provider: 'claude', oracle_model: 'claude-haiku-4-5-20251001' })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving]   = useState(false)
+  const { theme, setTheme }   = useTheme()
 
   useEffect(() => {
     fetch('/api/config')
       .then(r => r.json())
-      .then(d => { setForm({ scryer_root: d.scryer_root || '', code_root: d.code_root || '' }); setLoading(false) })
+      .then(d => {
+        setForm({
+          scryer_root: d.scryer_root || '',
+          code_root: d.code_root || '',
+          discord_token: d.discord_token || '',
+          discord_server_id: d.discord_server_id || '',
+          oracle_provider: d.oracle_provider || 'claude',
+          oracle_model: d.oracle_model || 'claude-haiku-4-5-20251001',
+        })
+        setLoading(false)
+      })
       .catch(() => setLoading(false))
   }, [])
 
@@ -24,7 +42,7 @@ function GlobalConfigPanel({ onClose }) {
       await fetch('/api/config', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, theme }),
       })
     } finally {
       setSaving(false)
@@ -45,6 +63,37 @@ function GlobalConfigPanel({ onClose }) {
           </label>
           <label>Default code root
             <input value={form.code_root} onChange={e => setForm(f => ({ ...f, code_root: e.target.value }))} placeholder="~/Code" />
+          </label>
+          <label>Theme
+            <select value={theme} onChange={e => setTheme(e.target.value)}>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+          <label>Discord bot token
+            <input
+              type="password"
+              value={form.discord_token}
+              onChange={e => setForm(f => ({ ...f, discord_token: e.target.value }))}
+              placeholder="Bot token from Discord developer portal"
+            />
+          </label>
+          <label>Discord server ID
+            <input
+              value={form.discord_server_id}
+              onChange={e => setForm(f => ({ ...f, discord_server_id: e.target.value }))}
+              placeholder="Right-click server → Copy Server ID"
+            />
+          </label>
+          <label>Oracle provider
+            <select value={form.oracle_provider} onChange={e => setForm(f => ({ ...f, oracle_provider: e.target.value, oracle_model: ORACLE_MODELS[e.target.value]?.[0] || '' }))}>
+              {ORACLE_PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </label>
+          <label>Oracle model
+            <select value={form.oracle_model} onChange={e => setForm(f => ({ ...f, oracle_model: e.target.value }))}>
+              {(ORACLE_MODELS[form.oracle_provider] || []).map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
           </label>
           <div className="settings-actions">
             <button className="btn-cancel" onClick={onClose}>Cancel</button>

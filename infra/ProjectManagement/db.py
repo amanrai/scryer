@@ -285,6 +285,8 @@ def init_db() -> None:
         log_cols = {r[1] for r in conn.execute("PRAGMA table_info(logs)").fetchall()}
         if "ticket_id" not in log_cols:
             conn.execute("ALTER TABLE logs ADD COLUMN ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL")
+        if "actor" not in log_cols:
+            conn.execute("ALTER TABLE logs ADD COLUMN actor TEXT NOT NULL DEFAULT 'human'")
 
         # Add columns to projects if absent (older DBs)
         proj_cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)").fetchall()}
@@ -762,7 +764,7 @@ def is_ticket_in_entity_scope(entity_type: str, entity_id: int, ticket_id: int) 
     return ticket["project_id"] in scope_ids
 
 
-def update_ticket(ticket_id: int, **kwargs) -> dict:
+def update_ticket(ticket_id: int, actor: str = "human", **kwargs) -> dict:
     allowed = {"title", "description", "state", "priority"}
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
 
@@ -795,6 +797,7 @@ def update_ticket(ticket_id: int, **kwargs) -> dict:
             f"T{ticket_id} moved to {updates['state']}",
             {"from": dict(current)["state"], "to": updates["state"]},
             ticket_id=ticket_id,
+            actor=actor,
         )
     other_fields = {k: v for k, v in updates.items() if k not in ("state", "updated_at")}
     if other_fields:
@@ -803,6 +806,7 @@ def update_ticket(ticket_id: int, **kwargs) -> dict:
             f"T{ticket_id} updated: {', '.join(other_fields.keys())}",
             {"fields": {k: str(v)[:200] for k, v in other_fields.items()}},
             ticket_id=ticket_id,
+            actor=actor,
         )
     if "title" in other_fields:
         try:
@@ -820,7 +824,7 @@ def update_ticket(ticket_id: int, **kwargs) -> dict:
     return get_ticket(ticket_id)
 
 
-def add_comment(ticket_id: int, content: str) -> dict:
+def add_comment(ticket_id: int, content: str, actor: str = "human") -> dict:
     with get_conn() as conn:
         if not conn.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone():
             raise ValueError(f"Ticket {ticket_id} not found")
@@ -835,6 +839,7 @@ def add_comment(ticket_id: int, content: str) -> dict:
         f"Comment on T{ticket_id}",
         {"content": content[:200]},
         ticket_id=ticket_id,
+        actor=actor,
     )
     return comment
 
@@ -1192,11 +1197,11 @@ def delete_comment(comment_id: int) -> None:
 # Logs
 # ---------------------------------------------------------------------------
 
-def log_action(action: str, message: str, details: dict | None = None, ticket_id: int | None = None) -> None:
+def log_action(action: str, message: str, details: dict | None = None, ticket_id: int | None = None, actor: str = "human") -> None:
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO logs (action, message, details, ticket_id, created_at) VALUES (?, ?, ?, ?, ?)",
-            (action, message, json.dumps(details or {}), ticket_id, _now()),
+            "INSERT INTO logs (action, message, details, ticket_id, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (action, message, json.dumps(details or {}), ticket_id, actor, _now()),
         )
 
 

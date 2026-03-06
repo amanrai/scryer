@@ -18,6 +18,11 @@ db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('scryer_roo
   .run(join(homedir(), 'Scryer'))
 db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('code_root', ?)`)
   .run(join(homedir(), 'Code'))
+db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('theme', 'dark')`).run()
+db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('discord_token', '')`).run()
+db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('discord_server_id', '')`).run()
+db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('oracle_provider', 'claude')`).run()
+db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('oracle_model', 'claude-haiku-4-5-20251001')`).run()
 
 function getScryerRoot() {
   const row = db.prepare(`SELECT value FROM scryer_config WHERE key = 'scryer_root'`).get()
@@ -156,21 +161,50 @@ router.post('/projects/:name/sub-projects', (req, res) => {
   res.status(201).json({ sub_project: sp })
 })
 
-// GET /api/config — return scryer_root, code_root, and home dir for path normalization
+function getTheme() {
+  const row = db.prepare(`SELECT value FROM scryer_config WHERE key = 'theme'`).get()
+  return row?.value ?? 'dark'
+}
+
+function getConfigVal(key) {
+  const row = db.prepare(`SELECT value FROM scryer_config WHERE key = ?`).get(key)
+  return row?.value ?? ''
+}
+
+// GET /api/config
 router.get('/config', (_req, res) => {
-  res.json({ scryer_root: getScryerRoot(), code_root: getCodeRoot(), home: homedir() })
+  res.json({
+    scryer_root: getScryerRoot(),
+    code_root: getCodeRoot(),
+    theme: getTheme(),
+    discord_token: getConfigVal('discord_token'),
+    discord_server_id: getConfigVal('discord_server_id'),
+    oracle_provider: getConfigVal('oracle_provider'),
+    oracle_model: getConfigVal('oracle_model'),
+    home: homedir(),
+  })
 })
 
-// PATCH /api/config — update scryer_root and/or code_root
+// PATCH /api/config
 router.patch('/config', (req, res) => {
-  const { scryer_root, code_root } = req.body
-  if (!scryer_root && code_root === undefined)
-    return res.status(400).json({ error: 'scryer_root or code_root required' })
-  if (scryer_root)
-    db.prepare(`INSERT OR REPLACE INTO scryer_config (key, value) VALUES ('scryer_root', ?)`).run(scryer_root)
-  if (code_root !== undefined)
-    db.prepare(`INSERT OR REPLACE INTO scryer_config (key, value) VALUES ('code_root', ?)`).run(code_root)
-  res.json({ scryer_root: getScryerRoot(), code_root: getCodeRoot() })
+  const allowed = ['scryer_root', 'code_root', 'theme', 'discord_token', 'discord_server_id', 'oracle_provider', 'oracle_model']
+  let updated = 0
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) {
+      db.prepare(`INSERT OR REPLACE INTO scryer_config (key, value) VALUES (?, ?)`).run(key, req.body[key])
+      updated++
+    }
+  }
+  if (!updated) return res.status(400).json({ error: 'No valid fields provided' })
+  res.json({
+    scryer_root: getScryerRoot(),
+    code_root: getCodeRoot(),
+    theme: getTheme(),
+    discord_token: getConfigVal('discord_token'),
+    discord_server_id: getConfigVal('discord_server_id'),
+    oracle_provider: getConfigVal('oracle_provider'),
+    oracle_model: getConfigVal('oracle_model'),
+  })
 })
 
 // GET /api/planning?type=project|subproject|ticket&id=N — resolve plan.md, create if missing, return content
