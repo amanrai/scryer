@@ -7,7 +7,7 @@ import '@xterm/xterm/css/xterm.css'
 
 const TMUX_SERVER = 'http://localhost:5055'
 
-export default function PlanningPanel({ session, entityType, entityId, entity, agent, onCollapse }) {
+export default function PlanningPanel({ session, entityType, entityId, entity, agent, onMinimize, onClose }) {
   const [planContent, setPlanContent] = useState('')
   const [planFresh, setPlanFresh]     = useState(false)
 
@@ -80,11 +80,12 @@ export default function PlanningPanel({ session, entityType, entityId, entity, a
   const label = entity.ticketId ? `T${entity.ticketId} — ${entity.label}` : entity.label
 
   return (
-    <div className="planning-modal-backdrop" onClick={onCollapse}>
+    <div className="planning-modal-backdrop" onClick={onMinimize}>
       <div className="planning-modal" onClick={e => e.stopPropagation()}>
         <div className="planning-panel-header">
           <span className="planning-panel-title">Plan — {label}</span>
-          <button className="planning-close-btn" onClick={onCollapse} title="Close">✕</button>
+          <button className="planning-close-btn" onClick={onMinimize} title="Minimize">─</button>
+          <button className="planning-close-btn" onClick={onClose} title="Close">✕</button>
         </div>
 
         <div className="planning-panel-body">

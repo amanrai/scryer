@@ -11,7 +11,7 @@ function expandHome(p, home) {
   return p
 }
 
-export default function ProjectSettingsPanel({ project, onClose, onSave, onDelete }) {
+export default function ProjectSettingsPanel({ project, onClose, onSave, onDelete, mapVersion = 'v2', onMapVersionChange }) {
   const [form, setForm] = useState({
     name:            project.name,
     description:     project.description || '',
@@ -118,6 +118,12 @@ export default function ProjectSettingsPanel({ project, onClose, onSave, onDelet
       <label>Git backend
         <select value={form.git_backend} onChange={set('git_backend')}>
           {GIT_BACKENDS.map(b => <option key={b} value={b}>{GIT_LABELS[b]}</option>)}
+        </select>
+      </label>
+      <label>UI version
+        <select value={mapVersion} onChange={e => onMapVersionChange?.(e.target.value)}>
+          <option value="v2">V2 (default)</option>
+          <option value="v1">V1 (legacy)</option>
         </select>
       </label>
       <label>Planning agent

@@ -389,7 +389,7 @@ function TaskModal({ node, onClose, onLaunch }) {
             <button className="mm-tb-btn" data-tip="Architect" title="Open architect session"
               onClick={e => { e.stopPropagation(); onClose(); onLaunch('architect', null, { type: 'ticket', ticketId: node.ticketId, entityId: node.ticketId }) }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/>
+                <line x1="7" y1="22" x2="7" y2="4"/><line x1="3" y1="4" x2="21" y2="4"/><line x1="7" y1="4" x2="3" y2="8"/><line x1="7" y1="12" x2="21" y2="4"/><line x1="17" y1="4" x2="17" y2="14"/><rect x="14" y="14" width="6" height="4" rx="1"/>
               </svg>
             </button>
           </>)}

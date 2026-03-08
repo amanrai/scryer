@@ -2229,7 +2229,14 @@ body {
 .arch-row-dot--rejected { color: var(--red); }
 
 .arch-row-kind {
-  display: none; /* hidden in narrow list — shown in detail */
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  opacity: 0.6;
+  white-space: nowrap;
 }
 
 .arch-row-title {
@@ -2530,6 +2537,67 @@ body {
 
 /* row dot for needs-revision */
 .arch-row-dot--needs_revision { color: var(--yellow); }
+
+/* ── Minimized session bar ─────────────────────────────────────────── */
+
+.minimized-bar {
+  position: fixed;
+  bottom: 0;
+  right: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 0 12px;
+  z-index: 1100;
+  pointer-events: none;
+}
+
+.minimized-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-panel, #1e2128);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  padding: 5px 8px 5px 10px;
+  pointer-events: all;
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.25);
+}
+
+.minimized-chip-type {
+  font-size: 0.70rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--blue);
+  opacity: 0.8;
+}
+
+.minimized-chip-label {
+  font-size: 0.82rem;
+  color: var(--text);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.minimized-chip-restore,
+.minimized-chip-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 2px 4px;
+  line-height: 1;
+  border-radius: 3px;
+}
+
+.minimized-chip-restore:hover { color: var(--text); background: var(--bg-hover); }
+.minimized-chip-close:hover   { color: var(--red);  background: color-mix(in srgb, var(--red) 12%, transparent); }
 
 /* ── Terminal panel ────────────────────────────────────────────────── */
 

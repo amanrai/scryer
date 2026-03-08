@@ -7,18 +7,22 @@ import '@xterm/xterm/css/xterm.css'
 const TMUX_SERVER = 'http://localhost:5055'
 const PRIORITY_COLORS = { high: 'var(--red)', medium: 'var(--yellow)', low: 'var(--text-muted)' }
 
-function itemTitle(item, edits) {
-  const merged = { ...item, ...edits }
+function itemTitle(item, edits, ticketById = {}) {
+  const cleaned = Object.fromEntries(Object.entries(edits).filter(([, v]) => v != null))
+  const merged = { ...item, ...cleaned }
   if (merged.kind === 'subproject') return merged.name
-  if (merged.kind === 'close') return merged.reason || `Close T${merged.ticket_id ?? merged.id}`
-  return merged.title || `Modify T${merged.ticket_id ?? merged.id}`
+  const tid = merged.ticket_id
+  const liveTitle = tid ? ticketById[tid]?.title : null
+  if (merged.kind === 'close') return liveTitle || merged.reason || `T${tid ?? merged.id}`
+  if (merged.kind === 'modify') return liveTitle || merged.title || `T${tid ?? merged.id}`
+  return merged.title || `T${merged.id}`
 }
 
 function kindLabel(item) {
   if (item.kind === 'subproject') return 'subproject'
-  if (item.kind === 'modify')     return `modify T${item.ticket_id ?? item.id}`
-  if (item.kind === 'close')      return `close T${item.ticket_id ?? item.id}`
-  return 'ticket'
+  if (item.kind === 'modify')     return `modify T${item.ticket_id ?? ''}`
+  if (item.kind === 'close')      return `close T${item.ticket_id ?? ''}`
+  return 'task'
 }
 
 // Initial per-item local state
@@ -34,7 +38,7 @@ function makeItemState(item) {
   }
 }
 
-export default function ArchitectDialog({ session, entityType, entityId, entity, onClose }) {
+export default function ArchitectDialog({ session, entityType, entityId, entity, projectName, onMinimize, onClose }) {
   const containerRef = useRef(null)
   const [proposal, setProposal]       = useState(null)
   const [itemStates, setItemStates]   = useState([])   // per-item local state
@@ -42,6 +46,24 @@ export default function ArchitectDialog({ session, entityType, entityId, entity,
   const [applying, setApplying]       = useState(false)
   const [results, setResults]         = useState(null)
   const [applyError, setApplyError]   = useState(null)
+  const [ticketById, setTicketById]   = useState({})
+
+  // Fetch live ticket titles so modify/close items resolve correctly
+  useEffect(() => {
+    if (!projectName) return
+    fetch(`/api/projects/${encodeURIComponent(projectName)}`)
+      .then(r => r.json())
+      .then(d => {
+        const map = {}
+        const allTickets = [
+          ...(d.tickets ?? []),
+          ...(d.sub_projects ?? []).flatMap(sp => sp.tickets ?? []),
+        ]
+        allTickets.forEach(t => { map[t.id] = t })
+        setTicketById(map)
+      })
+      .catch(() => {})
+  }, [projectName])
 
   const label = entity.ticketId ? `T${entity.ticketId} — ${entity.label}` : entity.label
   const proposalApplied = proposal?._status === 'applied'
@@ -210,7 +232,8 @@ export default function ArchitectDialog({ session, entityType, entityId, entity,
       <div className="arch-dialog" onClick={e => e.stopPropagation()}>
         <div className="planning-panel-header">
           <span className="planning-panel-title">Architect — {label}</span>
-          <button className="planning-close-btn" onClick={onClose}>✕</button>
+          {onMinimize && <button className="planning-close-btn" onClick={onMinimize} title="Minimize">─</button>}
+          <button className="planning-close-btn" onClick={onClose} title="Close">✕</button>
         </div>
 
         <div className="arch-dialog-body">
@@ -256,7 +279,7 @@ export default function ArchitectDialog({ session, entityType, entityId, entity,
                           {displayStatus === 'accepted' ? '✓' : displayStatus === 'rejected' ? '✕' : displayStatus === 'needs_revision' ? '…' : ''}
                         </span>
                         <span className="arch-row-kind">{kindLabel(it)}</span>
-                        <span className="arch-row-title">{itemTitle(it, { title: s.titleEdit, name: s.titleEdit })}</span>
+                        <span className="arch-row-title">{itemTitle(it, { title: s.titleEdit, name: s.titleEdit }, ticketById)}</span>
                       </button>
                     )
                   })}
@@ -302,8 +325,18 @@ export default function ArchitectDialog({ session, entityType, entityId, entity,
 
                   {state.status === 'needs_revision' ? (
                     <div className="arch-needs-revision">
-                      <div className="arch-needs-revision-label">⟳ Waiting for agent revision…</div>
-                      <div className="arch-needs-revision-title">{itemTitle(effectiveItem, {})}</div>
+                      <div className="arch-needs-revision-label">
+                        ⟳ Waiting for agent revision…
+                        <button
+                          className="arch-btn arch-btn--neutral"
+                          style={{ marginLeft: 8, fontSize: '0.75rem', padding: '2px 8px' }}
+                          onClick={async () => {
+                            updateItemState(selected, { status: 'pending' })
+                            await patchItem(effectiveItem.id, { status: 'pending', human_feedback: null })
+                          }}
+                        >Cancel</button>
+                      </div>
+                      <div className="arch-needs-revision-title">{itemTitle(effectiveItem, {}, ticketById)}</div>
                     </div>
                   ) : (
                     <>

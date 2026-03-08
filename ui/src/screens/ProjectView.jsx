@@ -123,16 +123,40 @@ export default function ProjectView() {
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
   const [filter, setFilter]           = useState('')
-  const [mapVersion, setMapVersion]   = useState(() => localStorage.getItem('mindMapVersion') || 'v1')
+  const [mapVersion, setMapVersion]   = useState(() => localStorage.getItem(`mindMapVersion_${name}`) || 'v2')
   const [logOpen, setLogOpen]         = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [reviewOpen, setReviewOpen]   = useState(false)
   const [launchError, setLaunchError]     = useState(null)
   const [launchBanner, setLaunchBanner]   = useState(null)
-  const [planningSession, setPlanningSession] = useState(null) // { session, entityType, entityId, entity, agent }
-  const [planningOpen, setPlanningOpen]       = useState(false)
-  const [architectSession, setArchitectSession] = useState(null) // { session, entityType, entityId, entity }
-  const [architectOpen, setArchitectOpen]       = useState(false)
+  // Minimized session persistence — keyed by project name
+  function lsKey() { return `scryer_minimized_${name}` }
+  function loadMinimized() {
+    try { return JSON.parse(localStorage.getItem(lsKey())) || {} } catch { return {} }
+  }
+  function saveMinimized(patch) {
+    try {
+      const current = loadMinimized()
+      localStorage.setItem(lsKey(), JSON.stringify({ ...current, ...patch }))
+    } catch {}
+  }
+  function clearMinimized(keys) {
+    try {
+      const current = loadMinimized()
+      keys.forEach(k => delete current[k])
+      if (Object.keys(current).length) localStorage.setItem(lsKey(), JSON.stringify(current))
+      else localStorage.removeItem(lsKey())
+    } catch {}
+  }
+
+  const _saved = loadMinimized()
+  const [planningSession, setPlanningSession]     = useState(_saved.planningSession || null)
+  const [planningOpen, setPlanningOpen]           = useState(false)
+  const [planningMinimized, setPlanningMinimized] = useState(!!_saved.planningSession)
+  const [architectSession, setArchitectSession]   = useState(_saved.architectSession || null)
+  const [architectOpen, setArchitectOpen]         = useState(false)
+  const [architectMinimized, setArchitectMinimized] = useState(!!_saved.architectSession)
+  const [minimizeOrder, setMinimizeOrder]         = useState(_saved.minimizeOrder || [])
 
   // Terminal panel state
   const [sessions, setSessions]   = useState([])
@@ -159,8 +183,11 @@ export default function ProjectView() {
         const data = await res.json()
         if (data.ok) {
           setLaunchBanner(null)
-          setPlanningSession({ session: data.session, entityType: apiType, entityId, entity, agent })
+          const ps = { session: data.session, entityType: apiType, entityId, entity, agent }
+          setPlanningSession(ps)
           setPlanningOpen(true)
+          setPlanningMinimized(false)
+          clearMinimized(['planningSession'])
         } else {
           setLaunchBanner({ state: 'error', msg: data.error || 'Launch failed' })
         }
@@ -201,6 +228,8 @@ export default function ProjectView() {
         setLaunchBanner(null)
         setArchitectSession({ session: data.session, entityType: apiType, entityId, entity, agent: effectiveAgent })
         setArchitectOpen(true)
+        setArchitectMinimized(false)
+        clearMinimized(['architectSession'])
       } else {
         setLaunchBanner({ state: 'error', msg: data.error || 'Architect launch failed' })
       }
@@ -209,6 +238,34 @@ export default function ProjectView() {
     }
   }
 
+  function handlePlanningMinimize() {
+    setPlanningOpen(false); setPlanningMinimized(true)
+    setMinimizeOrder(o => { const n = [...o.filter(x => x !== 'planning'), 'planning']; saveMinimized({ planningSession, minimizeOrder: n }); return n })
+  }
+  function handlePlanningRestore() {
+    setPlanningOpen(true); setPlanningMinimized(false)
+    setMinimizeOrder(o => { const n = o.filter(x => x !== 'planning'); saveMinimized({ minimizeOrder: n }); clearMinimized(['planningSession']); return n })
+  }
+  function handlePlanningClose() {
+    if (planningSession?.session) {
+      fetch('/api/tmux/kill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: planningSession.session }),
+      }).catch(() => {})
+    }
+    setPlanningOpen(false); setPlanningMinimized(false); setPlanningSession(null)
+    setMinimizeOrder(o => { const n = o.filter(x => x !== 'planning'); clearMinimized(['planningSession', 'minimizeOrder']); saveMinimized({ minimizeOrder: n }); return n })
+  }
+
+  function handleArchitectMinimize() {
+    setArchitectOpen(false); setArchitectMinimized(true)
+    setMinimizeOrder(o => { const n = [...o.filter(x => x !== 'architect'), 'architect']; saveMinimized({ architectSession, minimizeOrder: n }); return n })
+  }
+  function handleArchitectRestore() {
+    setArchitectOpen(true); setArchitectMinimized(false)
+    setMinimizeOrder(o => { const n = o.filter(x => x !== 'architect'); saveMinimized({ minimizeOrder: n }); clearMinimized(['architectSession']); return n })
+  }
   async function handleArchitectClose() {
     if (architectSession?.session) {
       fetch('/api/tmux/kill', {
@@ -217,7 +274,8 @@ export default function ProjectView() {
         body: JSON.stringify({ session: architectSession.session }),
       }).catch(() => {})
     }
-    setArchitectOpen(false)
+    setArchitectOpen(false); setArchitectMinimized(false); setArchitectSession(null)
+    setMinimizeOrder(o => { const n = o.filter(x => x !== 'architect'); clearMinimized(['architectSession', 'minimizeOrder']); saveMinimized({ minimizeOrder: n }); return n })
   }
 
   async function handleArchitectReopen() {
@@ -345,16 +403,6 @@ export default function ProjectView() {
               <button className="pv-filter-clear" onClick={() => setFilter('')}>×</button>
             )}
           </div>
-          <div className="pv-version-toggle">
-            <button
-              className={`pv-version-btn${mapVersion === 'v1' ? ' pv-version-btn--active' : ''}`}
-              onClick={() => { setMapVersion('v1'); localStorage.setItem('mindMapVersion', 'v1') }}
-            >V1</button>
-            <button
-              className={`pv-version-btn${mapVersion === 'v2' ? ' pv-version-btn--active' : ''}`}
-              onClick={() => { setMapVersion('v2'); localStorage.setItem('mindMapVersion', 'v2') }}
-            >V2</button>
-          </div>
           <button className="pv-log-btn" onClick={() => setReviewOpen(o => !o)}>Review</button>
           <button className="pv-log-btn" onClick={() => setLogOpen(o => !o)}>
             {logOpen ? 'Log ▾' : 'Log ▸'}
@@ -362,16 +410,6 @@ export default function ProjectView() {
           {sessions.length > 0 && !panelOpen && (
             <button className="term-reopen-btn" onClick={() => setPanelOpen(true)}>
               ▲ {sessions.length} session{sessions.length !== 1 ? 's' : ''}
-            </button>
-          )}
-          {planningSession && !planningOpen && (
-            <button className="term-reopen-btn" onClick={() => setPlanningOpen(true)}>
-              ▲ Planning
-            </button>
-          )}
-          {architectSession && !architectOpen && (
-            <button className="term-reopen-btn" onClick={handleArchitectReopen}>
-              ▲ Architect
             </button>
           )}
         </header>
@@ -408,6 +446,8 @@ export default function ProjectView() {
                 onClose={() => setSettingsOpen(false)}
                 onSave={(updated) => { setProject(prev => ({ ...prev, ...updated })); setSettingsOpen(false) }}
                 onDelete={() => navigate('/')}
+                mapVersion={mapVersion}
+                onMapVersionChange={v => { setMapVersion(v); localStorage.setItem(`mindMapVersion_${name}`, v) }}
               />
             </div>
           </div>
@@ -425,7 +465,8 @@ export default function ProjectView() {
         entityId={planningSession.entityId}
         entity={planningSession.entity}
         agent={planningSession.agent}
-        onCollapse={() => setPlanningOpen(false)}
+        onMinimize={handlePlanningMinimize}
+        onClose={handlePlanningClose}
       />
     )}
     {architectSession && architectOpen && (
@@ -435,8 +476,45 @@ export default function ProjectView() {
         entityType={architectSession.entityType}
         entityId={architectSession.entityId}
         entity={architectSession.entity}
+        projectName={project?.name}
+        onMinimize={handleArchitectMinimize}
         onClose={handleArchitectClose}
       />
+    )}
+
+    {/* Minimized session bar */}
+    {minimizeOrder.length > 0 && (
+      <div className="minimized-bar">
+        {minimizeOrder.map(key => {
+          if (key === 'planning' && planningMinimized && planningSession) {
+            const lbl = planningSession.entity?.ticketId
+              ? `T${planningSession.entity.ticketId} — ${planningSession.entity.label}`
+              : planningSession.entity?.label
+            return (
+              <div key="planning" className="minimized-chip">
+                <span className="minimized-chip-type">Plan</span>
+                <span className="minimized-chip-label">{lbl}</span>
+                <button className="minimized-chip-restore" onClick={handlePlanningRestore} title="Restore">▲</button>
+                <button className="minimized-chip-close"   onClick={handlePlanningClose}   title="Close">✕</button>
+              </div>
+            )
+          }
+          if (key === 'architect' && architectMinimized && architectSession) {
+            const lbl = architectSession.entity?.ticketId
+              ? `T${architectSession.entity.ticketId} — ${architectSession.entity.label}`
+              : architectSession.entity?.label
+            return (
+              <div key="architect" className="minimized-chip">
+                <span className="minimized-chip-type">Architect</span>
+                <span className="minimized-chip-label">{lbl}</span>
+                <button className="minimized-chip-restore" onClick={handleArchitectRestore} title="Restore">▲</button>
+                <button className="minimized-chip-close"   onClick={handleArchitectClose}   title="Close">✕</button>
+              </div>
+            )
+          }
+          return null
+        })}
+      </div>
     )}
     </>
   )
