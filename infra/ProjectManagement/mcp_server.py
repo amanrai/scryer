@@ -291,9 +291,6 @@ def add_comment(ticket_id: int, content: str, session_id: str | None = None) -> 
                 })
     try:
         comment = db.add_comment(ticket_id, content, actor="agent")
-        ticket  = db.get_ticket(ticket_id)
-        if ticket:
-            _notify_bot("comment", ticket, content[:200] + ("\u2026" if len(content) > 200 else ""))
         return json.dumps({"status": "created", "comment": comment})
     except ValueError as e:
         return json.dumps({"status": "error", "message": str(e)})
@@ -349,6 +346,28 @@ def get_ticket_history(ticket_id: int) -> str:
         history = db.get_ticket_history(ticket_id)
         return json.dumps({"history": history})
     except ValueError as e:
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+@mcp.tool()
+def get_proposal_history(entity_type: str, entity_id: str) -> str:
+    """
+    Return the full proposal history for an entity (project or subproject).
+
+    Each entry represents a past proposal item with:
+    - item_id, kind, proposal_id, generated_at, mode
+    - status: accepted | rejected | ignored | needs_revision
+    - rejection_reason (if set)
+    - ticket_id + ticket_title + ticket_state (if accepted and ticket exists)
+
+    Call this at the start of every architect session to understand what has been
+    proposed before, what was accepted/rejected, and the current state of resulting tickets.
+    Ordered most-recent proposal first.
+    """
+    try:
+        history = db.get_proposal_history(entity_type, entity_id)
+        return json.dumps({"history": history})
+    except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})
 
 

@@ -70,6 +70,8 @@ function TerminalView({ session, active, onSocket }) {
           scope_type: entity.type === 'root' ? 'project' : entity.type,
           scope_id: entity.entityId ?? entity.ticketId ?? '',
         })
+      } else if (mode === 'planning-attach') {
+        socket.emit('attach', { session: entity.tmuxSession, cols, rows })
       } else if (mode === 'watch') {
         socket.emit('attach', { session: entitySessionName(agent, entity), cols, rows })
       } else {
@@ -107,7 +109,8 @@ function TerminalView({ session, active, onSocket }) {
 
     return () => {
       ro.disconnect()
-      // Plan sessions: kill the tmux session when the tab is closed.
+      // 'plan' (old embedded resume): kill tmux session on close.
+      // 'planning-attach': leave running — session continues independently.
       // Build/agent sessions: leave running so the agent continues working.
       if (session.mode === 'plan' && tmuxSessionRef.current) {
         socket.emit('kill_session', { session: tmuxSessionRef.current })

@@ -339,6 +339,34 @@ def init_db() -> None:
             )
         """)
 
+        # Architect proposal history tables
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS proposals (
+                id              TEXT PRIMARY KEY,
+                entity_type     TEXT NOT NULL,
+                entity_id       TEXT NOT NULL,
+                mode            TEXT NOT NULL,
+                generated_at    TEXT NOT NULL,
+                archived_at     TEXT,
+                archive_reason  TEXT,
+                file_path       TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS proposal_items (
+                id              TEXT PRIMARY KEY,
+                proposal_id     TEXT NOT NULL REFERENCES proposals(id),
+                kind            TEXT NOT NULL,
+                entity_type     TEXT NOT NULL,
+                entity_id       TEXT NOT NULL,
+                ticket_id       INTEGER REFERENCES tickets(id),
+                status          TEXT NOT NULL DEFAULT 'pending',
+                rejection_reason TEXT,
+                created_at      TEXT NOT NULL,
+                resolved_at     TEXT
+            )
+        """)
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -368,10 +396,22 @@ def _resolve_ticket_target(project_name: str, sub_project_name: str | None) -> i
 
     if sub_project_name:
         with get_conn() as conn:
+            # Try direct child first
             child = conn.execute(
                 "SELECT * FROM projects WHERE parent_id = ? AND name = ? AND is_default = 0",
                 (project["id"], sub_project_name),
             ).fetchone()
+            if not child:
+                # Fall back: search the full subtree via recursive CTE
+                child = conn.execute("""
+                    WITH RECURSIVE sub AS (
+                        SELECT id, name, parent_id, is_default FROM projects WHERE parent_id = ?
+                        UNION ALL
+                        SELECT p.id, p.name, p.parent_id, p.is_default
+                        FROM projects p JOIN sub s ON p.parent_id = s.id
+                    )
+                    SELECT * FROM sub WHERE name = ? AND is_default = 0 LIMIT 1
+                """, (project["id"], sub_project_name)).fetchone()
         if not child:
             raise ValueError(f"Sub-project '{sub_project_name}' not found under '{project_name}'")
         parent_id = child["id"]
@@ -1210,4 +1250,73 @@ def get_logs(limit: int = 500) -> list[dict]:
         rows = conn.execute(
             "SELECT * FROM logs ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Proposal history
+# ---------------------------------------------------------------------------
+
+def upsert_proposal_item(
+    id: str,
+    proposal_id: str,
+    kind: str,
+    entity_type: str,
+    entity_id: str,
+    ticket_id: int | None = None,
+    status: str = "pending",
+    rejection_reason: str | None = None,
+    resolved_at: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO proposal_items
+                (id, proposal_id, kind, entity_type, entity_id, ticket_id, status,
+                 rejection_reason, created_at, resolved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                ticket_id        = excluded.ticket_id,
+                status           = excluded.status,
+                rejection_reason = excluded.rejection_reason,
+                resolved_at      = excluded.resolved_at
+        """, (id, proposal_id, kind, entity_type, entity_id, ticket_id, status,
+              rejection_reason, _now(), resolved_at))
+
+
+def archive_proposal(
+    id: str,
+    entity_type: str,
+    entity_id: str,
+    mode: str,
+    generated_at: str,
+    archive_reason: str,
+    file_path: str | None = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO proposals
+                (id, entity_type, entity_id, mode, generated_at, archived_at, archive_reason, file_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                archived_at    = excluded.archived_at,
+                archive_reason = excluded.archive_reason,
+                file_path      = excluded.file_path
+        """, (id, entity_type, entity_id, mode, generated_at, _now(), archive_reason, file_path))
+
+
+def get_proposal_history(entity_type: str, entity_id: str) -> list[dict]:
+    """Return all proposal items for this entity, joined with current ticket state."""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT
+                pi.id, pi.proposal_id, pi.kind, pi.status, pi.rejection_reason,
+                pi.ticket_id, pi.created_at, pi.resolved_at,
+                p.mode, p.generated_at, p.archive_reason,
+                t.title AS ticket_title, t.state AS ticket_state
+            FROM proposal_items pi
+            JOIN proposals p ON p.id = pi.proposal_id
+            LEFT JOIN tickets t ON t.id = pi.ticket_id
+            WHERE pi.entity_type = ? AND pi.entity_id = ?
+            ORDER BY p.generated_at DESC
+        """, (entity_type, str(entity_id))).fetchall()
         return [dict(r) for r in rows]

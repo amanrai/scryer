@@ -7,11 +7,14 @@ const AGENTS = ['claude', 'codex', 'gemini']
 function NodeToolbar({ node, onLaunch, onEdit, onSettings, onEnter, onLeave }) {
   return (
     <div className="mm-entity-toolbar" onMouseEnter={onEnter} onMouseLeave={onLeave} onClick={e => e.stopPropagation()}>
-      <button className="mm-tb-btn" data-tip="Plan" onClick={e => { e.stopPropagation(); onLaunch('plan', 'claude', node) }}>
+      <button className="mm-tb-btn" data-tip="Plan" onClick={e => { e.stopPropagation(); onLaunch('plan', null, node) }}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       </button>
       <button className="mm-tb-btn" data-tip="Edit plan" onClick={e => { e.stopPropagation(); onEdit(node) }}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </button>
+      <button className="mm-tb-btn" data-tip="Architect" onClick={e => { e.stopPropagation(); onLaunch('architect', null, node) }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="7" y1="22" x2="7" y2="4"/><line x1="3" y1="4" x2="21" y2="4"/><line x1="7" y1="4" x2="3" y2="8"/><line x1="7" y1="12" x2="21" y2="4"/><line x1="17" y1="4" x2="17" y2="14"/><rect x="14" y="14" width="6" height="4" rx="1"/></svg>
       </button>
       {node.type === 'root' && onSettings && (
         <button className="mm-tb-btn" data-tip="Settings" onClick={e => { e.stopPropagation(); onSettings(node) }}>
@@ -92,6 +95,18 @@ function EntityToolbar({ node, onLaunch, onEdit }) {
         {openDrop === 'watch' && (
           <div className="mm-tb-dropdown">
             {AGENTS.map(a => <button key={a} onClick={e => launch('watch', a, e)}>{a}</button>)}
+          </div>
+        )}
+      </div>
+
+      {/* Architect */}
+      <div className="mm-tb-group">
+        <button className="mm-tb-btn" data-tip="Architect" onClick={e => toggleDrop('architect', e)}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="7" y1="22" x2="7" y2="4"/><line x1="3" y1="4" x2="21" y2="4"/><line x1="7" y1="4" x2="3" y2="8"/><line x1="7" y1="12" x2="21" y2="4"/><line x1="17" y1="4" x2="17" y2="14"/><rect x="14" y="14" width="6" height="4" rx="1"/></svg>
+        </button>
+        {openDrop === 'architect' && (
+          <div className="mm-tb-dropdown">
+            {AGENTS.map(a => <button key={a} onClick={e => launch('architect', a, e)}>{a}</button>)}
           </div>
         )}
       </div>
@@ -397,6 +412,13 @@ export default function MindMap({ project, onLaunch, onSettings, filter = '' }) 
     return () => window.removeEventListener('keydown', onKey)
   }, [selectedTask, editingNode])
 
+  async function deleteTicket() {
+    if (!selectedTask) return
+    if (!window.confirm(`Delete T${selectedTask.ticketId}: ${selectedTask.label}? This cannot be undone.`)) return
+    await fetch(`/api/tickets/${selectedTask.ticketId}`, { method: 'DELETE' })
+    setSelectedTask(null)
+  }
+
   async function submitComment() {
     if (!commentDraft.trim() || commentSaving) return
     setCommentSaving(true)
@@ -580,7 +602,12 @@ export default function MindMap({ project, onLaunch, onSettings, filter = '' }) 
       {selectedTask && (
         <div className="mm-modal-backdrop" onClick={() => setSelectedTask(null)}>
           <div className="mm-modal" onClick={e => e.stopPropagation()}>
-            <button className="mm-modal-close" onClick={() => setSelectedTask(null)}>✕</button>
+            <div className="mm-modal-actions">
+              <button className="mm-modal-delete" onClick={deleteTicket} title="Delete ticket">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              </button>
+              <button className="mm-modal-close" onClick={() => setSelectedTask(null)}>✕</button>
+            </div>
             <EntityToolbar
               node={selectedTask}
               onLaunch={handleLaunchFromModal}

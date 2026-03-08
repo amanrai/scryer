@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 const GIT_BACKENDS = ['', 'forgejo', 'github', 'gitlab']
 const GIT_LABELS   = { '': '— none —', forgejo: 'Internal Forgejo', github: 'GitHub', gitlab: 'GitLab' }
+const AGENTS       = ['claude', 'codex', 'gemini']
 
 function expandHome(p, home) {
   if (!p) return p
@@ -12,11 +13,13 @@ function expandHome(p, home) {
 
 export default function ProjectSettingsPanel({ project, onClose, onSave, onDelete }) {
   const [form, setForm] = useState({
-    name:         project.name,
-    description:  project.description || '',
-    code_path:    project.code_path || '',
-    git_backend:  project.git_backend || '',
-    git_repo_url: project.git_repo_url || '',
+    name:            project.name,
+    description:     project.description || '',
+    code_path:       project.code_path || '',
+    git_backend:     project.git_backend || '',
+    git_repo_url:    project.git_repo_url || '',
+    planning_agent:  project.planning_agent || 'claude',
+    architect_agent: project.architect_agent || 'claude',
   })
   const [config, setConfig]               = useState({ scryer_root: '', code_root: '', home: '' })
   const [saving, setSaving]               = useState(false)
@@ -115,6 +118,16 @@ export default function ProjectSettingsPanel({ project, onClose, onSave, onDelet
       <label>Git backend
         <select value={form.git_backend} onChange={set('git_backend')}>
           {GIT_BACKENDS.map(b => <option key={b} value={b}>{GIT_LABELS[b]}</option>)}
+        </select>
+      </label>
+      <label>Planning agent
+        <select value={form.planning_agent} onChange={set('planning_agent')}>
+          {AGENTS.map(a => <option key={a} value={a}>{a}</option>)}
+        </select>
+      </label>
+      <label>Architect agent
+        <select value={form.architect_agent} onChange={set('architect_agent')}>
+          {AGENTS.map(a => <option key={a} value={a}>{a}</option>)}
         </select>
       </label>
       <label>Git repo URL

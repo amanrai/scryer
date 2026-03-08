@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url'
 import { dirname, join, basename } from 'path'
 import { writeFileSync, readFileSync, mkdirSync, readdirSync, existsSync, statSync, rmSync } from 'fs'
 import { homedir } from 'os'
-import { spawnSync } from 'child_process'
+import { spawnSync, spawn } from 'child_process'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const DB_PATH = process.env.PM_DB_PATH ||
@@ -23,6 +23,11 @@ db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('discord_to
 db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('discord_server_id', '')`).run()
 db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('oracle_provider', 'claude')`).run()
 db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('oracle_model', 'claude-haiku-4-5-20251001')`).run()
+
+// Add agent preference columns if they don't exist yet
+;['planning_agent', 'architect_agent'].forEach(col => {
+  try { db.exec(`ALTER TABLE projects ADD COLUMN ${col} TEXT NOT NULL DEFAULT 'claude'`) } catch {}
+})
 
 function getScryerRoot() {
   const row = db.prepare(`SELECT value FROM scryer_config WHERE key = 'scryer_root'`).get()
@@ -57,9 +62,9 @@ function resolvePlanPath(type, id) {
   let entityDir
 
   if (type === 'project') {
-    const proj = db.prepare(`SELECT id FROM projects WHERE id = ? AND is_default = 0`).get(id)
+    const proj = db.prepare(`SELECT id FROM projects WHERE (id = ? OR name = ?) AND is_default = 0 AND parent_id IS NULL`).get(id, id)
     if (!proj) throw new Error('Project not found')
-    const parts = projectPathParts(id)
+    const parts = projectPathParts(proj.id)
     entityDir = join(root, ...parts)
 
   } else if (type === 'subproject') {
@@ -81,7 +86,7 @@ function resolvePlanPath(type, id) {
     throw new Error('Unknown entity type')
   }
 
-  const planPath = join(entityDir, '.planning', 'plan.md')
+  const planPath = join(entityDir, 'plan.md')
   if (!existsSync(planPath)) {
     mkdirSync(dirname(planPath), { recursive: true })
     writeFileSync(planPath, '')
@@ -95,7 +100,7 @@ const router = Router()
 router.get('/projects', (_req, res) => {
   const projects = db.prepare(`
     SELECT id, name, description, code_path, git_backend, git_repo_url,
-           session_claude, session_codex, session_gemini
+           session_claude, session_codex, session_gemini, planning_agent, architect_agent
     FROM projects
     WHERE parent_id IS NULL AND is_default = 0
     ORDER BY name
@@ -125,7 +130,7 @@ router.post('/projects', (req, res) => {
 
   const project = db.prepare(`
     SELECT id, name, description, code_path, git_backend, git_repo_url,
-           session_claude, session_codex, session_gemini
+           session_claude, session_codex, session_gemini, planning_agent, architect_agent
     FROM projects WHERE id = ?
   `).get(projectId)
 
@@ -212,7 +217,7 @@ router.get('/planning', (req, res) => {
   const { type, id } = req.query
   if (!type || !id) return res.status(400).json({ error: 'type and id required' })
   try {
-    const planPath = resolvePlanPath(type, parseInt(id, 10))
+    const planPath = resolvePlanPath(type, id)
     const content = readFileSync(planPath, 'utf8')
     res.json({ content, path: planPath })
   } catch (e) {
@@ -227,7 +232,7 @@ router.patch('/planning', (req, res) => {
   if (!type || !id) return res.status(400).json({ error: 'type and id required' })
   if (content === undefined) return res.status(400).json({ error: 'content required' })
   try {
-    const planPath = resolvePlanPath(type, parseInt(id, 10))
+    const planPath = resolvePlanPath(type, id)
     writeFileSync(planPath, content, 'utf8')
     res.json({ ok: true })
   } catch (e) {
@@ -318,7 +323,7 @@ Start by asking any clarifying questions you need, then propose and create the b
 router.get('/projects/:name', (req, res) => {
   const project = db.prepare(`
     SELECT id, name, description, code_path, git_backend, git_repo_url,
-           session_claude, session_codex, session_gemini
+           session_claude, session_codex, session_gemini, planning_agent, architect_agent
     FROM projects
     WHERE name = ? AND is_default = 0
   `).get(req.params.name)
@@ -379,7 +384,8 @@ router.patch('/projects/:name', (req, res) => {
   if (!current) return res.status(404).json({ error: 'Project not found' })
 
   const allowed = ['name', 'description', 'code_path', 'git_backend', 'git_repo_url',
-                   'session_claude', 'session_codex', 'session_gemini']
+                   'session_claude', 'session_codex', 'session_gemini',
+                   'planning_agent', 'architect_agent']
   const updates = {}
   for (const field of allowed) {
     if (req.body[field] !== undefined) updates[field] = req.body[field]
@@ -394,7 +400,8 @@ router.patch('/projects/:name', (req, res) => {
 
   const updated = db.prepare(
     `SELECT id, name, description, code_path, git_backend, git_repo_url,
-            session_claude, session_codex, session_gemini FROM projects WHERE id = ?`
+            session_claude, session_codex, session_gemini,
+            planning_agent, architect_agent FROM projects WHERE id = ?`
   ).get(current.id)
   res.json({ project: updated })
 })
@@ -433,6 +440,22 @@ router.delete('/projects/:name', (req, res) => {
       }
     }
   }
+
+  res.json({ ok: true })
+})
+
+// DELETE /api/tickets/:id — permanently delete a ticket
+router.delete('/tickets/:id', (req, res) => {
+  const ticketId = parseInt(req.params.id, 10)
+  if (isNaN(ticketId)) return res.status(400).json({ error: 'Invalid ticket id' })
+
+  const ticket = db.prepare(`SELECT id, title FROM tickets WHERE id = ?`).get(ticketId)
+  if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
+
+  db.prepare(`DELETE FROM tickets WHERE id = ?`).run(ticketId)
+  const now = new Date().toISOString()
+  db.prepare(`INSERT INTO logs (action, message, details, ticket_id, created_at) VALUES (?, ?, ?, ?, ?)`)
+    .run('ticket_deleted', `T${ticketId} deleted: ${ticket.title}`, JSON.stringify({ ticket_id: ticketId, title: ticket.title }), ticketId, now)
 
   res.json({ ok: true })
 })
@@ -897,6 +920,194 @@ router.get('/detect-git-remote', (req, res) => {
   }
 
   res.json({ url: result.stdout.trim() })
+})
+
+
+
+// POST /api/planning/launch — launch a planning session for an entity
+router.post('/planning/launch', (req, res) => {
+  const { entity_type, entity_id, agent = 'claude' } = req.body
+  if (!entity_type || !entity_id) {
+    return res.status(400).json({ error: 'entity_type and entity_id required' })
+  }
+  const scryer_root = db.prepare(`SELECT value FROM scryer_config WHERE key = 'scryer_root'`).get()?.value
+  if (!scryer_root) {
+    return res.status(400).json({ error: 'scryer_root not configured. Set it in Global Config.' })
+  }
+
+  // Resolve numeric ID so we can build the session name (launch.py uses numeric_id, not entity name)
+  let numericId
+  if (entity_type === 'project') {
+    const row = db.prepare(`SELECT id FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`).get(entity_id)
+    if (!row) return res.status(404).json({ error: `Project '${entity_id}' not found` })
+    numericId = row.id
+  } else {
+    numericId = parseInt(entity_id, 10)
+  }
+
+  const launcher = join(__dirname, '..', '..', 'planning', 'launch.py')
+  // Block until session is ready so the browser can attach immediately
+  const result = spawnSync('python3', [launcher, '--type', entity_type, '--id', String(entity_id), '--agent', agent, '--no-attach'], {
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  if (result.status !== 0) {
+    return res.status(500).json({ error: result.stderr?.trim() || 'Launch failed' })
+  }
+  res.json({ ok: true, session: `planning-${entity_type}-${numericId}` })
+})
+
+// GET /api/architect/proposal?type=...&id=N — read proposal.json written by architect agent
+router.get('/architect/proposal', (req, res) => {
+  const { type, id } = req.query
+  if (!type || !id) return res.status(400).json({ error: 'type and id required' })
+  try {
+    const planPath = resolvePlanPath(type, id)  // returns entityDir/plan.md
+    const proposalPath = join(dirname(planPath), 'proposal.json')
+    if (!existsSync(proposalPath)) return res.json({ ready: false })
+    const raw = readFileSync(proposalPath, 'utf8')
+    const proposal = JSON.parse(raw)
+    res.json({ ready: true, proposal })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /api/architect/apply — create approved items from a proposal
+router.post('/architect/apply', (req, res) => {
+  const { entity_type, entity_id, items } = req.body
+  if (!entity_type || !entity_id || !items) {
+    return res.status(400).json({ error: 'entity_type, entity_id, items required' })
+  }
+
+  // Read proposal metadata for history tracking
+  let proposalMeta = {}
+  try {
+    const planPath = resolvePlanPath(entity_type, entity_id)
+    const proposalPath = join(dirname(planPath), 'proposal.json')
+    if (existsSync(proposalPath)) {
+      const proposal = JSON.parse(readFileSync(proposalPath, 'utf8'))
+      proposalMeta = {
+        proposal_id:   proposal.id || '',
+        proposal_path: proposalPath,
+        generated_at:  proposal.generated_at || '',
+        mode:          proposal.mode || 'architect',
+      }
+    }
+  } catch (_) {}
+
+  const applyScript = join(__dirname, '..', '..', 'architect', 'apply.py')
+  const result = spawnSync('python3', [applyScript], {
+    input: JSON.stringify({ entity_type, entity_id, items, ...proposalMeta }),
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  if (result.status !== 0) {
+    console.error('[architect/apply] stderr:', result.stderr)
+    console.error('[architect/apply] stdout:', result.stdout)
+    return res.status(500).json({ error: result.stderr?.trim() || 'Apply failed' })
+  }
+  try {
+    res.json(JSON.parse(result.stdout))
+  } catch {
+    res.status(500).json({ error: 'Invalid response from apply script' })
+  }
+})
+
+// PATCH /api/architect/proposal/items/:itemId — update a single item in proposal.json
+router.patch('/architect/proposal/items/:itemId', (req, res) => {
+  const { itemId } = req.params
+  const { type, id, status, human_feedback, rejection_reason } = req.body
+  if (!type || !id) return res.status(400).json({ error: 'type and id required' })
+  try {
+    const planPath = resolvePlanPath(type, id)
+    const proposalPath = join(dirname(planPath), 'proposal.json')
+    if (!existsSync(proposalPath)) return res.status(404).json({ error: 'No proposal found' })
+    const proposal = JSON.parse(readFileSync(proposalPath, 'utf8'))
+    const item = (proposal.items || []).find(i => i.id === itemId)
+    if (!item) return res.status(404).json({ error: `Item ${itemId} not found` })
+    if (status !== undefined)           item.status = status
+    if (human_feedback !== undefined)   item.human_feedback = human_feedback
+    if (rejection_reason !== undefined) item.rejection_reason = rejection_reason
+    writeFileSync(proposalPath, JSON.stringify(proposal, null, 2))
+    res.json({ ok: true, item })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /api/architect/proposal/clear — archive then delete proposal.json
+router.post('/architect/proposal/clear', (req, res) => {
+  const { type, id } = req.body
+  if (!type || !id) return res.status(400).json({ error: 'type and id required' })
+  try {
+    const planPath = resolvePlanPath(type, id)
+    const proposalPath = join(dirname(planPath), 'proposal.json')
+    if (existsSync(proposalPath)) {
+      // Archive before deleting so history is preserved
+      try {
+        const proposal = JSON.parse(readFileSync(proposalPath, 'utf8'))
+        const clearScript = join(__dirname, '..', '..', 'architect', 'apply.py')
+        const { spawnSync: _s } = require('child_process')
+        _s('python3', [clearScript], {
+          input: JSON.stringify({
+            entity_type:   type,
+            entity_id:     id,
+            items:         (proposal.items || []).map(i => ({ ...i, status: 'ignored' })),
+            proposal_id:   proposal.id || '',
+            proposal_path: proposalPath,
+            generated_at:  proposal.generated_at || '',
+            mode:          proposal.mode || 'architect',
+          }),
+          encoding: 'utf8',
+          timeout: 10000,
+        })
+      } catch (_) {}
+      rmSync(proposalPath)
+    }
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /api/architect/launch — launch an architect session for an entity
+router.post('/architect/launch', (req, res) => {
+  const { entity_type, entity_id, mode = 'architect', agent = 'claude' } = req.body
+  if (!entity_type || !entity_id) {
+    return res.status(400).json({ error: 'entity_type and entity_id required' })
+  }
+  const scryer_root = db.prepare(`SELECT value FROM scryer_config WHERE key = 'scryer_root'`).get()?.value
+  if (!scryer_root) {
+    return res.status(400).json({ error: 'scryer_root not configured. Set it in Global Config.' })
+  }
+
+  let numericId
+  if (entity_type === 'project') {
+    const row = db.prepare(`SELECT id FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`).get(entity_id)
+    if (!row) return res.status(404).json({ error: `Project '${entity_id}' not found` })
+    numericId = row.id
+  } else {
+    numericId = parseInt(entity_id, 10)
+  }
+
+  const launcher = join(__dirname, '..', '..', 'architect', 'launch.py')
+  const result = spawnSync('python3', [launcher, '--type', entity_type, '--id', String(entity_id), '--mode', mode, '--agent', agent, '--no-attach'], {
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  if (result.status !== 0) {
+    return res.status(500).json({ error: result.stderr?.trim() || 'Launch failed' })
+  }
+  res.json({ ok: true, session: `architect-${entity_type}-${numericId}-${mode}` })
+})
+
+// POST /api/tmux/kill — kill a named tmux session
+router.post('/tmux/kill', (req, res) => {
+  const { session } = req.body
+  if (!session) return res.status(400).json({ error: 'session required' })
+  spawnSync('/opt/homebrew/bin/tmux', ['kill-session', '-t', session])
+  res.json({ ok: true })
 })
 
 // POST /api/clone-codebase — clone a remote git repo to dest

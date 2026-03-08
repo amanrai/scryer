@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import MindMap from '../components/MindMap.jsx'
+import MindMapV2 from '../components/MindMapV2.jsx'
 import TerminalPanel from '../components/TerminalPanel.jsx'
+import PlanningPanel from '../components/PlanningPanel.jsx'
+import ArchitectDialog from '../components/ArchitectDialog.jsx'
 import ProjectSettingsPanel from '../components/ProjectSettingsPanel.jsx'
 import ReviewDialog from '../components/ReviewDialog.jsx'
 
@@ -120,10 +123,16 @@ export default function ProjectView() {
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
   const [filter, setFilter]           = useState('')
+  const [mapVersion, setMapVersion]   = useState(() => localStorage.getItem('mindMapVersion') || 'v1')
   const [logOpen, setLogOpen]         = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [reviewOpen, setReviewOpen]   = useState(false)
-  const [launchError, setLaunchError] = useState(null)
+  const [launchError, setLaunchError]     = useState(null)
+  const [launchBanner, setLaunchBanner]   = useState(null)
+  const [planningSession, setPlanningSession] = useState(null) // { session, entityType, entityId, entity, agent }
+  const [planningOpen, setPlanningOpen]       = useState(false)
+  const [architectSession, setArchitectSession] = useState(null) // { session, entityType, entityId, entity }
+  const [architectOpen, setArchitectOpen]       = useState(false)
 
   // Terminal panel state
   const [sessions, setSessions]   = useState([])
@@ -135,50 +144,86 @@ export default function ProjectView() {
 
   // Launch a new terminal session (or switch to existing tab for non-plan modes)
   async function handleLaunch(mode, agent, entity) {
-    let enrichedEntity = entity
-
     if (mode === 'plan') {
-      // Resolve the entity's planning folder so the tmux session can cd into it
       const apiType = entity.type === 'root' ? 'project' : entity.type
-      const entityId = entity.ticketId ?? entity.entityId
+      // Project type uses name as ID; subproject/ticket use numeric ID
+      const entityId = entity.type === 'root' ? entity.label : (entity.ticketId ?? entity.entityId)
+      const effectiveAgent = agent ?? project.planning_agent ?? 'claude'
+      setLaunchBanner({ state: 'loading', msg: 'Setting up planning session…' })
       try {
-        const res = await fetch(`/api/planning?type=${apiType}&id=${entityId}`)
+        const res = await fetch('/api/planning/launch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entity_type: apiType, entity_id: entityId, agent: effectiveAgent }),
+        })
         const data = await res.json()
-        if (data.path) {
-          // data.path = .../EntityFolder/.planning/plan.md — workdir is two levels up
-          const workdir = data.path.split('/').slice(0, -2).join('/')
-          enrichedEntity = { ...entity, workdir }
+        if (data.ok) {
+          setLaunchBanner(null)
+          setPlanningSession({ session: data.session, entityType: apiType, entityId, entity, agent })
+          setPlanningOpen(true)
         } else {
-          setLaunchError(`Could not resolve planning folder: ${data.error || 'unknown error'}`)
-          return
+          setLaunchBanner({ state: 'error', msg: data.error || 'Launch failed' })
         }
       } catch (e) {
-        setLaunchError(`Could not reach API to resolve planning folder: ${e.message}`)
-        return
+        setLaunchBanner({ state: 'error', msg: e.message })
       }
-
-      // If fresh=true, fetch the startup prompt to inject after the agent starts
-      if (entity.fresh) {
-        try {
-          const res = await fetch(`/api/planning-prompt?type=${apiType}&id=${entityId}`)
-          const data = await res.json()
-          if (data.prompt) {
-            enrichedEntity = { ...enrichedEntity, fresh: true, startup_input: data.prompt }
-          }
-        } catch (e) {
-          console.error('Could not fetch planning prompt:', e)
-        }
-      }
+      return
     }
 
-    const id = `${mode === 'plan' ? 'plan' : agent}-${agent}-${entity.type}-${entity.ticketId ?? entity.entityId}`
+    if (mode === 'architect') {
+      const apiType = entity.type === 'root' ? 'project' : entity.type
+      const entityId = entity.type === 'root' ? entity.label : (entity.ticketId ?? entity.entityId)
+      const effectiveAgent = agent ?? project.architect_agent ?? 'claude'
+      await launchArchitect(apiType, entityId, entity, effectiveAgent)
+      return
+    }
+
+    const id = `${agent}-${agent}-${entity.type}-${entity.ticketId ?? entity.entityId}`
 
     setSessions(prev => {
       if (prev.find(s => s.id === id)) return prev
-      return [...prev, { id, mode, agent, entity: enrichedEntity }]
+      return [...prev, { id, mode, agent, entity }]
     })
     setActiveId(id)
     setPanelOpen(true)
+  }
+
+  async function launchArchitect(apiType, entityId, entity, effectiveAgent) {
+    setLaunchBanner({ state: 'loading', msg: 'Setting up architect session…' })
+    try {
+      const res = await fetch('/api/architect/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity_type: apiType, entity_id: entityId, agent: effectiveAgent }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setLaunchBanner(null)
+        setArchitectSession({ session: data.session, entityType: apiType, entityId, entity, agent: effectiveAgent })
+        setArchitectOpen(true)
+      } else {
+        setLaunchBanner({ state: 'error', msg: data.error || 'Architect launch failed' })
+      }
+    } catch (e) {
+      setLaunchBanner({ state: 'error', msg: e.message })
+    }
+  }
+
+  async function handleArchitectClose() {
+    if (architectSession?.session) {
+      fetch('/api/tmux/kill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: architectSession.session }),
+      }).catch(() => {})
+    }
+    setArchitectOpen(false)
+  }
+
+  async function handleArchitectReopen() {
+    if (!architectSession) return
+    const { entityType, entityId, entity, agent } = architectSession
+    await launchArchitect(entityType, entityId, entity, agent)
   }
 
   function handleCloseSession(id) {
@@ -251,7 +296,7 @@ export default function ProjectView() {
     const agent = searchParams.get('agent') || 'claude'
     // Clear query params so a refresh doesn't re-launch
     navigate(`/projects/${name}`, { replace: true })
-    handleLaunch('plan', agent, { type: 'root', entityId: project.id, label: project.name, fresh: true })
+    handleLaunch('plan', agent, { type: 'root', entityId: project.id, label: project.name })
   }, [project]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return <div className="state-msg">Loading…</div>
@@ -281,6 +326,7 @@ export default function ProjectView() {
   )
 
   return (
+    <>
     <div className="project-view" style={{ flexDirection: isColumn ? 'column' : 'row' }}>
       {dock === 'left' && panel}
 
@@ -299,6 +345,16 @@ export default function ProjectView() {
               <button className="pv-filter-clear" onClick={() => setFilter('')}>×</button>
             )}
           </div>
+          <div className="pv-version-toggle">
+            <button
+              className={`pv-version-btn${mapVersion === 'v1' ? ' pv-version-btn--active' : ''}`}
+              onClick={() => { setMapVersion('v1'); localStorage.setItem('mindMapVersion', 'v1') }}
+            >V1</button>
+            <button
+              className={`pv-version-btn${mapVersion === 'v2' ? ' pv-version-btn--active' : ''}`}
+              onClick={() => { setMapVersion('v2'); localStorage.setItem('mindMapVersion', 'v2') }}
+            >V2</button>
+          </div>
           <button className="pv-log-btn" onClick={() => setReviewOpen(o => !o)}>Review</button>
           <button className="pv-log-btn" onClick={() => setLogOpen(o => !o)}>
             {logOpen ? 'Log ▾' : 'Log ▸'}
@@ -308,6 +364,16 @@ export default function ProjectView() {
               ▲ {sessions.length} session{sessions.length !== 1 ? 's' : ''}
             </button>
           )}
+          {planningSession && !planningOpen && (
+            <button className="term-reopen-btn" onClick={() => setPlanningOpen(true)}>
+              ▲ Planning
+            </button>
+          )}
+          {architectSession && !architectOpen && (
+            <button className="term-reopen-btn" onClick={handleArchitectReopen}>
+              ▲ Architect
+            </button>
+          )}
         </header>
         {launchError && (
           <div className="launch-error-banner">
@@ -315,7 +381,23 @@ export default function ProjectView() {
             <button onClick={() => setLaunchError(null)}>×</button>
           </div>
         )}
-        <MindMap project={project} onLaunch={handleLaunch} onSettings={() => setSettingsOpen(true)} filter={filter} />
+        {launchBanner && (
+          <div className={`launch-banner launch-banner--${launchBanner.state}`}>
+            {launchBanner.state === 'loading' && <span>{launchBanner.msg}</span>}
+            {launchBanner.state === 'error'   && <span>Planning launch failed: {launchBanner.msg}</span>}
+            {launchBanner.state === 'ready'   && (
+              <span>
+                Planning session ready —{' '}
+                <code>tmux attach -t {launchBanner.session}</code>
+              </span>
+            )}
+            <button onClick={() => setLaunchBanner(null)}>×</button>
+          </div>
+        )}
+        {mapVersion === 'v1'
+          ? <MindMap project={project} onLaunch={handleLaunch} onSettings={() => setSettingsOpen(true)} filter={filter} />
+          : <MindMapV2 project={project} onLaunch={handleLaunch} onSettings={() => setSettingsOpen(true)} filter={filter} />
+        }
         {logOpen && <ActivityDialog project={project} onClose={() => setLogOpen(false)} />}
         {reviewOpen && <ReviewDialog project={project} onClose={() => setReviewOpen(false)} />}
         {settingsOpen && (
@@ -334,5 +416,28 @@ export default function ProjectView() {
 
       {dock !== 'left' && panel}
     </div>
+
+    {planningSession && planningOpen && (
+      <PlanningPanel
+        key={planningSession.session}
+        session={planningSession.session}
+        entityType={planningSession.entityType}
+        entityId={planningSession.entityId}
+        entity={planningSession.entity}
+        agent={planningSession.agent}
+        onCollapse={() => setPlanningOpen(false)}
+      />
+    )}
+    {architectSession && architectOpen && (
+      <ArchitectDialog
+        key={architectSession.session}
+        session={architectSession.session}
+        entityType={architectSession.entityType}
+        entityId={architectSession.entityId}
+        entity={architectSession.entity}
+        onClose={handleArchitectClose}
+      />
+    )}
+    </>
   )
 }

@@ -141,7 +141,6 @@ class ScryerBot(discord.Client):
             else:
                 log.info(f"Found #{UPDATES_CHANNEL}")
 
-            await self._updates_channel.send("\U0001f52e Scryer bot online")
 
         self._init_last_log_id()
         asyncio.ensure_future(self._tail_logs())
