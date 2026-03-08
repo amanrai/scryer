@@ -30,6 +30,33 @@ import oracle as oracle_mod
 pm_db.init_db()
 
 TMUX = "/opt/homebrew/bin/tmux"
+CODEX_CONFIG     = Path.home() / ".codex" / "config.toml"
+GEMINI_TRUST     = Path.home() / ".gemini" / "trustedFolders.json"
+GLOBAL_TEMPLATES = REPO_ROOT / "templates"
+
+
+def _trust_codex_dir(directory: str) -> None:
+    """Add directory to ~/.codex/config.toml as trusted if not already present."""
+    key = f'[projects."{directory}"]'
+    CODEX_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    content = CODEX_CONFIG.read_text() if CODEX_CONFIG.exists() else ""
+    if key not in content:
+        sep = "\n" if content and not content.endswith("\n") else ""
+        CODEX_CONFIG.write_text(content + f'{sep}\n{key}\ntrust_level = "trusted"\n')
+
+
+def _trust_gemini_dirs(*directories: str) -> None:
+    """Add directories to ~/.gemini/trustedFolders.json as TRUST_FOLDER."""
+    import json
+    GEMINI_TRUST.parent.mkdir(parents=True, exist_ok=True)
+    data = json.loads(GEMINI_TRUST.read_text()) if GEMINI_TRUST.exists() else {}
+    changed = False
+    for d in directories:
+        if d and d not in data:
+            data[d] = "TRUST_FOLDER"
+            changed = True
+    if changed:
+        GEMINI_TRUST.write_text(json.dumps(data, indent=2) + "\n")
 
 
 # ── Entity resolution ─────────────────────────────────────────────────────────
@@ -157,7 +184,7 @@ For re-architect, also support:
   {{"id": "item-<uuid4>", "kind": "close",  "ticket_id": 42, "reason": "...", "status": "pending", "human_feedback": null, "rejection_reason": null, "revisions": []}}
 
 Item UUID rules:
-- Generate a fresh uuid4 for every new item: `import uuid; str(uuid.uuid4())`
+- Generate fresh uuid4s by calling the MCP tool: `generate_uuids(count=N)` — returns `{"uuids": [...]}`
 - For re-architect: if revising a concept from a prior proposal, reuse the original item UUID
   (look up via `get_proposal_history` — match by ticket_id for modify/close, by concept for new tickets)
 - Never reuse UUIDs across unrelated items"""
@@ -184,6 +211,7 @@ d. Call `{list_tickets_call}` to get the current ticket state.
 - Otherwise → **re-architect** (reconcile: never touch Closed / In Progress / In Review / Agent Finished tickets)
 
 **Step 4 — Write proposal.json**
+- Call `generate_uuids(count=N)` via MCP to get all UUIDs you need at once (one call for the proposal + all items)
 - Assign a uuid4 to the proposal itself (`"id": "prop-<uuid>"`)
 - Assign uuid4s to each item (`"id": "item-<uuid>"`)
   - Re-architect: reuse UUIDs from prior proposals for revised versions of the same concept
@@ -235,6 +263,29 @@ def _get_code_path(entity: dict) -> str:
         return ""
 
 
+def load_template(name: str, scryer_root: str, entity: dict) -> str:
+    """Load template: per-project copy first, fall back to global (and copy it for future edits)."""
+    root_project = _root_project_name(entity)
+    per_project = Path(scryer_root).expanduser() / root_project / "templates" / name
+    if per_project.exists():
+        return per_project.read_text()
+    global_path = GLOBAL_TEMPLATES / name
+    if not global_path.exists():
+        raise FileNotFoundError(f"Template {name!r} not found")
+    # Copy to per-project location so the user can customise it
+    per_project.parent.mkdir(parents=True, exist_ok=True)
+    per_project.write_text(global_path.read_text())
+    return per_project.read_text()
+
+
+def render_template(template: str, substitutions: dict) -> str:
+    """Replace {KEY} placeholders using simple str.replace (safe with JSON content)."""
+    result = template
+    for key, value in substitutions.items():
+        result = result.replace(f"{{{key}}}", value)
+    return result
+
+
 def build_claude_md(entity: dict, plan_content: str, mode: str, scryer_root: str,
                     work_dir: str) -> str:
     entity_label = f"{entity['type'].capitalize()}: {entity['name']}"
@@ -260,54 +311,31 @@ def build_claude_md(entity: dict, plan_content: str, mode: str, scryer_root: str
         work_dir=work_dir,
     )
 
-    sp_note = ""
     if sp_name:
         sp_note = f"\nRoot project for MCP calls: **`{root_project}`**, sub-project: **`{sp_name}`**"
     else:
         sp_note = f"\nRoot project for MCP calls: **`{root_project}`**"
 
-    return f"""# Architect Session — {entity_label}
-
-You are the Architect agent for **{entity['name']}** in the Scryer project management system.
-
-Your job: analyse the plan, codebase, and history, then produce a structured ticket proposal.
-
-{mode_instr}
-
-## Rules
-
-- Write `proposal.json` to **`{work_dir}/proposal.json`** — valid JSON only, no markdown fences.
-- Do NOT create tickets, sub-projects, or any PM state. The human's UI handles that.
-- Ticket titles ≤ 80 chars, action-oriented.
-- Descriptions must include acceptance criteria — enough for an execution agent to act alone.
-- Never re-propose items previously rejected unless plan.md has materially changed.
-- Never touch tickets in state: Closed / In Progress / In Review / Agent Finished.
-{sp_note}
-
-## proposal.json schema
-
-{PROPOSAL_SCHEMA}
-
-## Entity
-
-**Location:** {entity['location']}
-**Description:** {entity.get('description') or '(none)'}
-**Code path:** {code_path or '(not set)'}
-
-## Existing tickets (at session start)
-
-{existing_tickets}
-
-## plan.md
-
-{plan_content.strip() if plan_content.strip() else '_(empty — ask the human to run a planning session first)_'}
-"""
+    template = load_template("architect.md", scryer_root, entity)
+    return render_template(template, {
+        "ENTITY_LABEL":       entity_label,
+        "ENTITY_NAME":        entity["name"],
+        "MODE_INSTRUCTIONS":  mode_instr,
+        "WORK_DIR":           work_dir,
+        "SP_NOTE":            sp_note,
+        "PROPOSAL_SCHEMA":    PROPOSAL_SCHEMA,
+        "ENTITY_LOCATION":    entity["location"],
+        "ENTITY_DESCRIPTION": entity.get("description") or "(none)",
+        "CODE_PATH":          code_path or "(not set)",
+        "EXISTING_TICKETS":   existing_tickets,
+        "PLAN_CONTENT":       plan_content.strip() if plan_content.strip() else "_(empty — ask the human to run a planning session first)_",
+    })
 
 
 # ── Launcher ──────────────────────────────────────────────────────────────────
 
 def launch(entity_type: str, entity_id: str, mode: str = "architect",
-           agent: str = "claude", no_attach: bool = False):
+           agent: str = "claude", warmup: int = 10, no_attach: bool = False):
     config      = oracle_mod._get_config()
     scryer_root = config.get("scryer_root", "")
     if not scryer_root:
@@ -319,6 +347,15 @@ def launch(entity_type: str, entity_id: str, mode: str = "architect",
 
     plan_file    = _plan_path(entity, scryer_root)
     plan_content = plan_file.read_text(errors="ignore") if plan_file.exists() else ""
+
+    # Snapshot plan.md before the session can overwrite it
+    if plan_file.exists() and plan_content.strip():
+        from datetime import datetime, timezone
+        versions_dir = plan_file.parent / "versions"
+        versions_dir.mkdir(exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        (versions_dir / f"{ts}.md").write_text(plan_content)
+        print(f"Snapshotted plan.md → versions/{ts}.md")
 
     # Write CLAUDE.md into a working directory alongside plan.md
     work_dir = str(plan_file.parent)
@@ -338,6 +375,11 @@ def launch(entity_type: str, entity_id: str, mode: str = "architect",
     }
     agent_cmd = AGENT_COMMANDS.get(agent, agent)
 
+    if agent == "codex":
+        _trust_codex_dir(work_dir)
+    if agent == "gemini":
+        _trust_gemini_dirs(work_dir, str(Path(scryer_root).expanduser()))
+
     subprocess.run([TMUX, "kill-session", "-t", session], capture_output=True)
     subprocess.run([
         TMUX, "new-session", "-d", "-s", session,
@@ -347,22 +389,21 @@ def launch(entity_type: str, entity_id: str, mode: str = "architect",
 
     # Startup prompt after agent loads
     startup_msg = "Please read CLAUDE.md, then begin."
-    startup_script = (
-        f"sleep 4 && {TMUX} send-keys -t {shlex.quote(session)} "
-        f"{shlex.quote(startup_msg)} Enter"
-    )
+    if agent == "claude":
+        startup_script = (
+            f"sleep {warmup} && {TMUX} send-keys -t {shlex.quote(session)} "
+            f"{shlex.quote(startup_msg)} Enter"
+        )
+    else:
+        startup_script = (
+            f"sleep {warmup} && {TMUX} send-keys -t {shlex.quote(session)} "
+            f"{shlex.quote(startup_msg)} Enter && "
+            f"sleep 0.5 && {TMUX} send-keys -t {shlex.quote(session)} '' Enter"
+        )
     subprocess.Popen(
         ["bash", "-c", startup_script],
         close_fds=True, start_new_session=True,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
-    pm_db.log_action(
-        "architect_session_started",
-        f"Architect ({mode}) started for {entity_type} '{entity['name']}'",
-        {"entity_type": entity_type, "entity_id": str(entity["numeric_id"]),
-         "mode": mode, "agent": agent},
-        actor="human",
     )
 
     print(f"\nSession '{session}' ready.")
@@ -373,12 +414,6 @@ def launch(entity_type: str, entity_id: str, mode: str = "architect",
         print(f"Attaching… (detach with Ctrl+B D)\n")
         subprocess.run([TMUX, "attach-session", "-t", session])
 
-        pm_db.log_action(
-            "architect_session_ended",
-            f"Architect ({mode}) ended for {entity_type} '{entity['name']}'",
-            {"entity_type": entity_type, "entity_id": str(entity["numeric_id"]), "mode": mode},
-            actor="human",
-        )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -390,7 +425,9 @@ if __name__ == "__main__":
     parser.add_argument("--mode",  default="architect",
                         choices=["architect", "re-architect"])
     parser.add_argument("--agent", default="claude", choices=["claude", "codex", "gemini"])
+    parser.add_argument("--warmup", type=int, default=10,
+                        help="Seconds to wait before sending startup message (default: 10)")
     parser.add_argument("--no-attach", action="store_true",
                         help="Set up session but do not attach")
     args = parser.parse_args()
-    launch(args.type, args.id, args.mode, args.agent, no_attach=args.no_attach)
+    launch(args.type, args.id, args.mode, args.agent, warmup=args.warmup, no_attach=args.no_attach)

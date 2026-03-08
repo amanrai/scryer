@@ -38,8 +38,12 @@ function makeItemState(item) {
   }
 }
 
-export default function ArchitectDialog({ session, entityType, entityId, entity, projectName, onMinimize, onClose }) {
-  const containerRef = useRef(null)
+const DEFAULT_WARMUP_MS = 10000
+
+export default function ArchitectDialog({ session, entityType, entityId, entity, agent, launchedAt, warmup, projectName, onMinimize, onClose }) {
+  const containerRef  = useRef(null)
+  const termRef       = useRef(null)
+  const fitRef        = useRef(null)
   const [proposal, setProposal]       = useState(null)
   const [itemStates, setItemStates]   = useState([])   // per-item local state
   const [selected, setSelected]       = useState(0)
@@ -47,6 +51,26 @@ export default function ArchitectDialog({ session, entityType, entityId, entity,
   const [results, setResults]         = useState(null)
   const [applyError, setApplyError]   = useState(null)
   const [ticketById, setTicketById]   = useState({})
+  const [fontSize, setFontSize]       = useState(14)
+
+  // ── Startup countdown ──────────────────────────────────────────────────────
+  const totalMs    = warmup ?? DEFAULT_WARMUP_MS
+  const elapsed    = launchedAt ? Date.now() - launchedAt : totalMs
+  const initRemain = Math.max(0, totalMs - elapsed)
+
+  const [remainingMs, setRemainingMs] = useState(initRemain)
+  const startupDoneRef = useRef(initRemain <= 0)
+
+  useEffect(() => {
+    if (initRemain <= 0) { startupDoneRef.current = true; return }
+    const origin = Date.now()
+    const tick = setInterval(() => {
+      const left = Math.max(0, totalMs - elapsed - (Date.now() - origin))
+      setRemainingMs(left)
+      if (left <= 0) { clearInterval(tick); startupDoneRef.current = true }
+    }, 80)
+    return () => clearInterval(tick)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch live ticket titles so modify/close items resolve correctly
   useEffect(() => {
@@ -118,9 +142,11 @@ export default function ArchitectDialog({ session, entityType, entityId, entity,
     const term = new Terminal({
       theme: { background: '#1a1d23', foreground: '#abb2bf', cursor: '#61afef', selectionBackground: '#3e4451' },
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', monospace",
-      fontSize: 12, lineHeight: 1.4, cursorBlink: true,
+      fontSize, lineHeight: 1.4, cursorBlink: true,
     })
+    termRef.current = term
     const fit = new FitAddon()
+    fitRef.current = fit
     term.loadAddon(fit)
     term.open(containerRef.current)
     fit.fit()
@@ -129,11 +155,15 @@ export default function ArchitectDialog({ session, entityType, entityId, entity,
     socket.on('output', d => term.write(d))
     socket.on('session_ended', () => term.write('\r\n\x1b[33m[session ended]\x1b[0m\r\n'))
     socket.on('session_not_found', () => term.write(`\r\n\x1b[31mSession not found: ${session}\x1b[0m\r\n`))
-    term.onData(d => socket.emit('input', d))
+    term.onData(d => { if (startupDoneRef.current) socket.emit('input', d) })
     const ro = new ResizeObserver(() => { fit.fit(); socket.emit('resize', { cols: term.cols, rows: term.rows }) })
     ro.observe(containerRef.current)
-    return () => { ro.disconnect(); socket.disconnect(); term.dispose() }
-  }, [session])
+    return () => { ro.disconnect(); socket.disconnect(); term.dispose(); termRef.current = null; fitRef.current = null }
+  }, [session]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (termRef.current) { termRef.current.options.fontSize = fontSize; fitRef.current?.fit() }
+  }, [fontSize])
 
   function updateItemState(i, patch) {
     setItemStates(prev => prev.map((s, idx) => idx === i ? { ...s, ...patch } : s))
@@ -232,6 +262,10 @@ export default function ArchitectDialog({ session, entityType, entityId, entity,
       <div className="arch-dialog" onClick={e => e.stopPropagation()}>
         <div className="planning-panel-header">
           <span className="planning-panel-title">Architect — {label}</span>
+          <div className="term-font-controls">
+            <button className="term-font-btn" onClick={() => setFontSize(s => Math.max(9, s - 1))} title="Decrease font size">A−</button>
+            <button className="term-font-btn" onClick={() => setFontSize(s => Math.min(24, s + 1))} title="Increase font size">A+</button>
+          </div>
           {onMinimize && <button className="planning-close-btn" onClick={onMinimize} title="Minimize">─</button>}
           <button className="planning-close-btn" onClick={onClose} title="Close">✕</button>
         </div>
@@ -241,6 +275,12 @@ export default function ArchitectDialog({ session, entityType, entityId, entity,
           {/* Column 1: terminal */}
           <div className="arch-term-pane">
             <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+            {remainingMs > 0 && (
+              <div className="term-startup-overlay">
+                <div className="term-startup-spinner" />
+                <div className="term-startup-secs">{Math.ceil(remainingMs / 1000)}</div>
+              </div>
+            )}
           </div>
 
           {/* Column 2: item list */}

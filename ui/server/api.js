@@ -7,6 +7,8 @@ import { homedir } from 'os'
 import { spawnSync, spawn } from 'child_process'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = join(__dirname, '..', '..')
+const GLOBAL_TEMPLATES_DIR = join(REPO_ROOT, 'templates')
 const DB_PATH = process.env.PM_DB_PATH ||
   join(__dirname, '..', '..', 'infra', 'ProjectManagement', 'data', 'pm.db')
 
@@ -28,6 +30,8 @@ db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('oracle_mod
 ;['planning_agent', 'architect_agent'].forEach(col => {
   try { db.exec(`ALTER TABLE projects ADD COLUMN ${col} TEXT NOT NULL DEFAULT 'claude'`) } catch {}
 })
+// Add agent warmup column if it doesn't exist yet (seconds to hold off input after session opens)
+try { db.exec(`ALTER TABLE projects ADD COLUMN agent_warmup INTEGER NOT NULL DEFAULT 10`) } catch {}
 
 function getScryerRoot() {
   const row = db.prepare(`SELECT value FROM scryer_config WHERE key = 'scryer_root'`).get()
@@ -37,6 +41,27 @@ function getScryerRoot() {
 function getCodeRoot() {
   const row = db.prepare(`SELECT value FROM scryer_config WHERE key = 'code_root'`).get()
   return row?.value ?? ''
+}
+
+// Copy global templates to per-project location (no-op if already present or scryer_root missing)
+function initProjectTemplates(projectName) {
+  const scryerRoot = getScryerRoot()
+  if (!scryerRoot) return
+  if (!existsSync(GLOBAL_TEMPLATES_DIR)) return
+  const destDir = join(scryerRoot, projectName, 'templates')
+  try {
+    const files = readdirSync(GLOBAL_TEMPLATES_DIR)
+    for (const file of files) {
+      const src = join(GLOBAL_TEMPLATES_DIR, file)
+      const dest = join(destDir, file)
+      if (statSync(src).isFile() && !existsSync(dest)) {
+        mkdirSync(destDir, { recursive: true })
+        writeFileSync(dest, readFileSync(src))
+      }
+    }
+  } catch (e) {
+    console.warn('initProjectTemplates: could not copy templates:', e.message)
+  }
 }
 
 function slugify(title) {
@@ -94,13 +119,40 @@ function resolvePlanPath(type, id) {
   return planPath
 }
 
+// Walk up the project tree to find the root project's agent_warmup for any entity
+function getRootWarmup(entityType, entityId) {
+  try {
+    let projectId
+    if (entityType === 'project') {
+      const row = db.prepare(`SELECT id, agent_warmup FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`).get(String(entityId))
+      return row?.agent_warmup ?? 10
+    } else if (entityType === 'subproject') {
+      projectId = parseInt(entityId)
+    } else if (entityType === 'ticket') {
+      const ticket = db.prepare(`SELECT project_id FROM tickets WHERE id = ?`).get(parseInt(entityId))
+      if (!ticket) return 10
+      projectId = ticket.project_id
+    } else {
+      return 10
+    }
+    // Walk up to root
+    let proj = db.prepare(`SELECT parent_id, agent_warmup FROM projects WHERE id = ?`).get(projectId)
+    while (proj?.parent_id) {
+      proj = db.prepare(`SELECT parent_id, agent_warmup FROM projects WHERE id = ?`).get(proj.parent_id)
+    }
+    return proj?.agent_warmup ?? 10
+  } catch {
+    return 10
+  }
+}
+
 const router = Router()
 
 // GET /api/projects — root-level projects only (no parent)
 router.get('/projects', (_req, res) => {
   const projects = db.prepare(`
     SELECT id, name, description, code_path, git_backend, git_repo_url,
-           session_claude, session_codex, session_gemini, planning_agent, architect_agent
+           session_claude, session_codex, session_gemini, planning_agent, architect_agent, agent_warmup
     FROM projects
     WHERE parent_id IS NULL AND is_default = 0
     ORDER BY name
@@ -110,7 +162,8 @@ router.get('/projects', (_req, res) => {
 
 // POST /api/projects — create a new root project
 router.post('/projects', (req, res) => {
-  const { name, description = '', code_path = '', git_backend = '', git_repo_url = '' } = req.body
+  const { name, description = '', code_path = '', git_backend = '', git_repo_url = '',
+          planning_agent = 'claude', architect_agent = 'claude' } = req.body
   if (!name?.trim()) return res.status(400).json({ error: 'Name is required' })
 
   const existing = db.prepare(`SELECT id FROM projects WHERE name = ?`).get(name.trim())
@@ -118,9 +171,10 @@ router.post('/projects', (req, res) => {
 
   const now = new Date().toISOString()
   const result = db.prepare(`
-    INSERT INTO projects (name, description, code_path, git_backend, git_repo_url, parent_id, is_default, created_at)
-    VALUES (?, ?, ?, ?, ?, NULL, 0, ?)
-  `).run(name.trim(), description.trim(), code_path.trim(), git_backend.trim(), git_repo_url.trim(), now)
+    INSERT INTO projects (name, description, code_path, git_backend, git_repo_url, planning_agent, architect_agent, parent_id, is_default, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)
+  `).run(name.trim(), description.trim(), code_path.trim(), git_backend.trim(), git_repo_url.trim(),
+         planning_agent, architect_agent, now)
 
   const projectId = result.lastInsertRowid
   db.prepare(`
@@ -130,9 +184,11 @@ router.post('/projects', (req, res) => {
 
   const project = db.prepare(`
     SELECT id, name, description, code_path, git_backend, git_repo_url,
-           session_claude, session_codex, session_gemini, planning_agent, architect_agent
+           session_claude, session_codex, session_gemini, planning_agent, architect_agent, agent_warmup
     FROM projects WHERE id = ?
   `).get(projectId)
+
+  initProjectTemplates(name.trim())
 
   res.status(201).json({ project })
 })
@@ -323,7 +379,7 @@ Start by asking any clarifying questions you need, then propose and create the b
 router.get('/projects/:name', (req, res) => {
   const project = db.prepare(`
     SELECT id, name, description, code_path, git_backend, git_repo_url,
-           session_claude, session_codex, session_gemini, planning_agent, architect_agent
+           session_claude, session_codex, session_gemini, planning_agent, architect_agent, agent_warmup
     FROM projects
     WHERE name = ? AND is_default = 0
   `).get(req.params.name)
@@ -364,6 +420,11 @@ router.get('/projects/:name', (req, res) => {
         WHERE ticket_id = ? AND is_root = 0
         ORDER BY created_at
       `).all(t.id),
+      tags: db.prepare(`
+        SELECT tg.name FROM tags tg
+        JOIN ticket_tags tt ON tg.id = tt.tag_id
+        WHERE tt.ticket_id = ? ORDER BY tg.name
+      `).all(t.id).map(r => r.name),
     }))
   }
 
@@ -385,7 +446,7 @@ router.patch('/projects/:name', (req, res) => {
 
   const allowed = ['name', 'description', 'code_path', 'git_backend', 'git_repo_url',
                    'session_claude', 'session_codex', 'session_gemini',
-                   'planning_agent', 'architect_agent']
+                   'planning_agent', 'architect_agent', 'agent_warmup']
   const updates = {}
   for (const field of allowed) {
     if (req.body[field] !== undefined) updates[field] = req.body[field]
@@ -401,7 +462,7 @@ router.patch('/projects/:name', (req, res) => {
   const updated = db.prepare(
     `SELECT id, name, description, code_path, git_backend, git_repo_url,
             session_claude, session_codex, session_gemini,
-            planning_agent, architect_agent FROM projects WHERE id = ?`
+            planning_agent, architect_agent, agent_warmup FROM projects WHERE id = ?`
   ).get(current.id)
   res.json({ project: updated })
 })
@@ -484,6 +545,64 @@ router.post('/tickets/:id/comments', (req, res) => {
     .run('comment', truncated, JSON.stringify({ content: content.trim() }), ticketId, now)
 
   res.status(201).json({ comment })
+})
+
+// ── Tag API ───────────────────────────────────────────────────────────────────
+
+function normalizeTag(tag) {
+  return tag.trim().toLowerCase().replace(/\s+/g, '-')
+}
+
+// GET /api/tags — list all tags with usage counts
+router.get('/tags', (_req, res) => {
+  const tags = db.prepare(
+    `SELECT tg.name, COUNT(tt.ticket_id) AS count
+     FROM tags tg LEFT JOIN ticket_tags tt ON tg.id = tt.tag_id
+     GROUP BY tg.id ORDER BY tg.name`
+  ).all()
+  res.json({ tags })
+})
+
+// GET /api/tags/:tag/tickets — all tickets with this tag across all projects
+router.get('/tags/:tag/tickets', (req, res) => {
+  const name = normalizeTag(req.params.tag)
+  const tickets = db.prepare(
+    `SELECT t.id, t.title, t.state, t.priority, t.project_id
+     FROM tickets t
+     JOIN ticket_tags tt ON t.id = tt.ticket_id
+     JOIN tags tg ON tg.id = tt.tag_id
+     WHERE tg.name = ? ORDER BY t.created_at`
+  ).all(name)
+  res.json({ tickets })
+})
+
+// POST /api/tickets/:id/tags — add a tag to a ticket
+router.post('/tickets/:id/tags', (req, res) => {
+  const ticketId = parseInt(req.params.id, 10)
+  const ticket = db.prepare(`SELECT id FROM tickets WHERE id = ?`).get(ticketId)
+  if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
+
+  const raw = req.body?.tag
+  if (!raw?.trim()) return res.status(400).json({ error: 'tag required' })
+  const name = normalizeTag(raw)
+  if (!name) return res.status(400).json({ error: 'Invalid tag name' })
+
+  const now = new Date().toISOString()
+  db.prepare(`INSERT OR IGNORE INTO tags (name, created_at) VALUES (?, ?)`).run(name, now)
+  const tagRow = db.prepare(`SELECT id FROM tags WHERE name = ?`).get(name)
+  db.prepare(`INSERT OR IGNORE INTO ticket_tags (ticket_id, tag_id) VALUES (?, ?)`).run(ticketId, tagRow.id)
+  res.status(201).json({ ticket_id: ticketId, tag: name })
+})
+
+// DELETE /api/tickets/:id/tags/:tag — remove a tag from a ticket
+router.delete('/tickets/:id/tags/:tag', (req, res) => {
+  const ticketId = parseInt(req.params.id, 10)
+  const name = normalizeTag(req.params.tag)
+  const tagRow = db.prepare(`SELECT id FROM tags WHERE name = ?`).get(name)
+  if (tagRow) {
+    db.prepare(`DELETE FROM ticket_tags WHERE ticket_id = ? AND tag_id = ?`).run(ticketId, tagRow.id)
+  }
+  res.json({ ok: true })
 })
 
 // GET /api/drops — list all saved screenshots, newest first
@@ -750,6 +869,65 @@ router.get('/planning-conversations/:filename', (req, res) => {
   }
 })
 
+// ── Template API ──────────────────────────────────────────────────────────────
+
+const VALID_TEMPLATES = new Set(['planning', 'architect'])
+
+function templatePaths(projectName, templateName) {
+  const scryerRoot = getScryerRoot()
+  const perProject = join(scryerRoot, projectName, 'templates', `${templateName}.md`)
+  const global_    = join(GLOBAL_TEMPLATES_DIR, `${templateName}.md`)
+  return { perProject, global: global_ }
+}
+
+// GET /api/projects/:name/templates/:template
+router.get('/projects/:name/templates/:template', (req, res) => {
+  const { name, template } = req.params
+  if (!VALID_TEMPLATES.has(template)) return res.status(400).json({ error: 'Unknown template' })
+  const proj = db.prepare(`SELECT id FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`).get(name)
+  if (!proj) return res.status(404).json({ error: 'Project not found' })
+
+  const { perProject, global: globalPath } = templatePaths(name, template)
+  if (existsSync(perProject)) {
+    return res.json({ content: readFileSync(perProject, 'utf8'), source: 'project' })
+  }
+  if (existsSync(globalPath)) {
+    return res.json({ content: readFileSync(globalPath, 'utf8'), source: 'global' })
+  }
+  res.status(404).json({ error: 'Template file not found' })
+})
+
+// PATCH /api/projects/:name/templates/:template — save per-project template
+router.patch('/projects/:name/templates/:template', (req, res) => {
+  const { name, template } = req.params
+  if (!VALID_TEMPLATES.has(template)) return res.status(400).json({ error: 'Unknown template' })
+  const proj = db.prepare(`SELECT id FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`).get(name)
+  if (!proj) return res.status(404).json({ error: 'Project not found' })
+
+  const { content } = req.body
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content required' })
+
+  const { perProject } = templatePaths(name, template)
+  mkdirSync(dirname(perProject), { recursive: true })
+  writeFileSync(perProject, content, 'utf8')
+  res.json({ ok: true, source: 'project' })
+})
+
+// POST /api/projects/:name/templates/:template/reset — revert to global default
+router.post('/projects/:name/templates/:template/reset', (req, res) => {
+  const { name, template } = req.params
+  if (!VALID_TEMPLATES.has(template)) return res.status(400).json({ error: 'Unknown template' })
+  const proj = db.prepare(`SELECT id FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`).get(name)
+  if (!proj) return res.status(404).json({ error: 'Project not found' })
+
+  const { perProject, global: globalPath } = templatePaths(name, template)
+  if (!existsSync(globalPath)) return res.status(404).json({ error: 'Global template not found' })
+
+  mkdirSync(dirname(perProject), { recursive: true })
+  writeFileSync(perProject, readFileSync(globalPath, 'utf8'), 'utf8')
+  res.json({ ok: true })
+})
+
 // GET /api/projects/:name/review — list changed files in the project's code_path
 router.get('/projects/:name/review', (req, res) => {
   const project = db.prepare(
@@ -945,16 +1123,17 @@ router.post('/planning/launch', (req, res) => {
     numericId = parseInt(entity_id, 10)
   }
 
+  const warmup = getRootWarmup(entity_type, entity_id)
   const launcher = join(__dirname, '..', '..', 'planning', 'launch.py')
   // Block until session is ready so the browser can attach immediately
-  const result = spawnSync('python3', [launcher, '--type', entity_type, '--id', String(entity_id), '--agent', agent, '--no-attach'], {
+  const result = spawnSync('python3', [launcher, '--type', entity_type, '--id', String(entity_id), '--agent', agent, '--warmup', String(warmup), '--no-attach'], {
     encoding: 'utf8',
     timeout: 30000,
   })
   if (result.status !== 0) {
     return res.status(500).json({ error: result.stderr?.trim() || 'Launch failed' })
   }
-  res.json({ ok: true, session: `planning-${entity_type}-${numericId}` })
+  res.json({ ok: true, session: `planning-${entity_type}-${numericId}`, warmup_ms: warmup * 1000 })
 })
 
 // GET /api/architect/proposal?type=...&id=N — read proposal.json written by architect agent
@@ -1091,15 +1270,16 @@ router.post('/architect/launch', (req, res) => {
     numericId = parseInt(entity_id, 10)
   }
 
+  const warmup = getRootWarmup(entity_type, entity_id)
   const launcher = join(__dirname, '..', '..', 'architect', 'launch.py')
-  const result = spawnSync('python3', [launcher, '--type', entity_type, '--id', String(entity_id), '--mode', mode, '--agent', agent, '--no-attach'], {
+  const result = spawnSync('python3', [launcher, '--type', entity_type, '--id', String(entity_id), '--mode', mode, '--agent', agent, '--warmup', String(warmup), '--no-attach'], {
     encoding: 'utf8',
     timeout: 30000,
   })
   if (result.status !== 0) {
     return res.status(500).json({ error: result.stderr?.trim() || 'Launch failed' })
   }
-  res.json({ ok: true, session: `architect-${entity_type}-${numericId}-${mode}` })
+  res.json({ ok: true, session: `architect-${entity_type}-${numericId}-${mode}`, warmup_ms: warmup * 1000 })
 })
 
 // POST /api/tmux/kill — kill a named tmux session

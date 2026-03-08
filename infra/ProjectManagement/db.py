@@ -108,6 +108,18 @@ def _create_schema(conn) -> None:
             created_at  TEXT NOT NULL,
             expires_at  TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS tags (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ticket_tags (
+            ticket_id  INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+            tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            PRIMARY KEY (ticket_id, tag_id)
+        );
     """)
 
 
@@ -336,6 +348,22 @@ def init_db() -> None:
                 ticket_id   INTEGER PRIMARY KEY REFERENCES tickets(id) ON DELETE CASCADE,
                 last_seen   TEXT NOT NULL,
                 agent_token TEXT NOT NULL DEFAULT ''
+            )
+        """)
+
+        # Tags
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tags (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_tags (
+                ticket_id  INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+                tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (ticket_id, tag_id)
             )
         """)
 
@@ -732,6 +760,13 @@ def get_ticket(ticket_id: int) -> dict | None:
                 (ticket_id,),
             ).fetchall()
         ]
+        ticket["tags"] = [
+            r[0] for r in conn.execute(
+                "SELECT tg.name FROM tags tg JOIN ticket_tags tt ON tg.id = tt.tag_id "
+                "WHERE tt.ticket_id = ? ORDER BY tg.name",
+                (ticket_id,),
+            ).fetchall()
+        ]
         return ticket
 
 
@@ -780,9 +815,18 @@ def list_tickets(project_name: str, sub_project_name: str | None = None, state: 
             f"SELECT * FROM tickets WHERE project_id IN ({placeholders}){where_state} ORDER BY created_at",
             params,
         ).fetchall()
-    if compact:
-        return [{k: v for k, v in dict(r).items() if k in _COMPACT_FIELDS} for r in rows]
-    return [dict(r) for r in rows]
+        tickets = []
+        for r in rows:
+            t = {k: v for k, v in dict(r).items() if k in _COMPACT_FIELDS} if compact else dict(r)
+            t["tags"] = [
+                tg[0] for tg in conn.execute(
+                    "SELECT tg.name FROM tags tg JOIN ticket_tags tt ON tg.id = tt.tag_id "
+                    "WHERE tt.ticket_id = ? ORDER BY tg.name",
+                    (t["id"],),
+                ).fetchall()
+            ]
+            tickets.append(t)
+    return tickets
 
 
 def is_ticket_in_entity_scope(entity_type: str, entity_id: int, ticket_id: int) -> bool:
@@ -1320,3 +1364,76 @@ def get_proposal_history(entity_type: str, entity_id: str) -> list[dict]:
             ORDER BY p.generated_at DESC
         """, (entity_type, str(entity_id))).fetchall()
         return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Tags (T102)
+# ---------------------------------------------------------------------------
+
+def _normalize_tag(tag: str) -> str:
+    return tag.strip().lower().replace(" ", "-")
+
+
+def add_tag(ticket_id: int, tag: str) -> dict:
+    """Create tag if it doesn't exist, then associate it with the ticket."""
+    name = _normalize_tag(tag)
+    if not name:
+        raise ValueError("Tag name cannot be empty")
+    with get_conn() as conn:
+        if not conn.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone():
+            raise ValueError(f"Ticket {ticket_id} not found")
+        conn.execute(
+            "INSERT OR IGNORE INTO tags (name, created_at) VALUES (?, ?)",
+            (name, _now()),
+        )
+        tag_id = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()["id"]
+        conn.execute(
+            "INSERT OR IGNORE INTO ticket_tags (ticket_id, tag_id) VALUES (?, ?)",
+            (ticket_id, tag_id),
+        )
+    return {"ticket_id": ticket_id, "tag": name}
+
+
+def remove_tag(ticket_id: int, tag: str) -> dict:
+    """Remove a tag association from a ticket (does not delete the tag itself)."""
+    name = _normalize_tag(tag)
+    with get_conn() as conn:
+        tag_row = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
+        if tag_row:
+            conn.execute(
+                "DELETE FROM ticket_tags WHERE ticket_id = ? AND tag_id = ?",
+                (ticket_id, tag_row["id"]),
+            )
+    return {"ticket_id": ticket_id, "tag": name}
+
+
+def list_tags() -> list[dict]:
+    """Return all tags with usage counts, sorted by name."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT tg.name, COUNT(tt.ticket_id) AS count "
+            "FROM tags tg LEFT JOIN ticket_tags tt ON tg.id = tt.tag_id "
+            "GROUP BY tg.id ORDER BY tg.name"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_tickets_by_tag(tag: str) -> list[dict]:
+    """Return all tickets with a given tag, across all projects."""
+    name = _normalize_tag(tag)
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT t.id, t.title, t.state, t.priority, t.project_id "
+            "FROM tickets t "
+            "JOIN ticket_tags tt ON t.id = tt.ticket_id "
+            "JOIN tags tg ON tg.id = tt.tag_id "
+            "WHERE tg.name = ? "
+            "ORDER BY t.created_at",
+            (name,),
+        ).fetchall()
+        tickets = []
+        for r in rows:
+            t = dict(r)
+            t["location"] = _project_path(t["project_id"])
+            tickets.append(t)
+    return tickets

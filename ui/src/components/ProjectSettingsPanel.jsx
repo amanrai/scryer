@@ -4,6 +4,11 @@ const GIT_BACKENDS = ['', 'forgejo', 'github', 'gitlab']
 const GIT_LABELS   = { '': '— none —', forgejo: 'Internal Forgejo', github: 'GitHub', gitlab: 'GitLab' }
 const AGENTS       = ['claude', 'codex', 'gemini']
 
+const TEMPLATE_PLACEHOLDERS = {
+  planning:  ['{ENTITY_LABEL}', '{ENTITY_NAME}', '{PLAN_FILE}', '{ENTITY_LOCATION}', '{ENTITY_DESCRIPTION}', '{ANCESTOR_CONTEXT}', '{CURRENT_PLAN}'],
+  architect: ['{ENTITY_LABEL}', '{ENTITY_NAME}', '{MODE_INSTRUCTIONS}', '{WORK_DIR}', '{SP_NOTE}', '{PROPOSAL_SCHEMA}', '{ENTITY_LOCATION}', '{ENTITY_DESCRIPTION}', '{CODE_PATH}', '{EXISTING_TICKETS}', '{PLAN_CONTENT}'],
+}
+
 function expandHome(p, home) {
   if (!p) return p
   if (p.startsWith('~/')) return home + p.slice(1)
@@ -20,6 +25,7 @@ export default function ProjectSettingsPanel({ project, onClose, onSave, onDelet
     git_repo_url:    project.git_repo_url || '',
     planning_agent:  project.planning_agent || 'claude',
     architect_agent: project.architect_agent || 'claude',
+    agent_warmup:    project.agent_warmup ?? 10,
   })
   const [config, setConfig]               = useState({ scryer_root: '', code_root: '', home: '' })
   const [saving, setSaving]               = useState(false)
@@ -28,6 +34,11 @@ export default function ProjectSettingsPanel({ project, onClose, onSave, onDelet
   const [deleting, setDeleting]           = useState(false)
   const [detecting, setDetecting]         = useState(false)
   const [detectError, setDetectError]     = useState(null)
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [activeTemplate, setActiveTemplate] = useState('planning')
+  const [templateContent, setTemplateContent] = useState({ planning: null, architect: null })
+  const [templateSource, setTemplateSource]   = useState({ planning: null, architect: null })
+  const [templateSaving, setTemplateSaving]   = useState(false)
 
   useEffect(() => {
     fetch('/api/config')
@@ -58,6 +69,43 @@ export default function ProjectSettingsPanel({ project, onClose, onSave, onDelet
     } finally {
       setDetecting(false)
     }
+  }
+
+  useEffect(() => {
+    if (!showTemplates) return
+    ;['planning', 'architect'].forEach(name => {
+      if (templateContent[name] !== null) return
+      fetch(`/api/projects/${project.name}/templates/${name}`)
+        .then(r => r.json())
+        .then(d => {
+          setTemplateContent(prev => ({ ...prev, [name]: d.content ?? '' }))
+          setTemplateSource(prev => ({ ...prev, [name]: d.source ?? 'global' }))
+        })
+        .catch(() => {})
+    })
+  }, [showTemplates]) // eslint-disable-line
+
+  const handleTemplateSave = async () => {
+    setTemplateSaving(true)
+    try {
+      await fetch(`/api/projects/${project.name}/templates/${activeTemplate}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: templateContent[activeTemplate] }),
+      })
+      setTemplateSource(prev => ({ ...prev, [activeTemplate]: 'project' }))
+    } finally {
+      setTemplateSaving(false)
+    }
+  }
+
+  const handleTemplateReset = async () => {
+    if (!confirm(`Reset ${activeTemplate} template to global default?`)) return
+    await fetch(`/api/projects/${project.name}/templates/${activeTemplate}/reset`, { method: 'POST' })
+    // Reload
+    const d = await fetch(`/api/projects/${project.name}/templates/${activeTemplate}`).then(r => r.json())
+    setTemplateContent(prev => ({ ...prev, [activeTemplate]: d.content ?? '' }))
+    setTemplateSource(prev => ({ ...prev, [activeTemplate]: d.source ?? 'global' }))
   }
 
   const expandedCodeRoot = expandHome(config.code_root, config.home)
@@ -136,6 +184,13 @@ export default function ProjectSettingsPanel({ project, onClose, onSave, onDelet
           {AGENTS.map(a => <option key={a} value={a}>{a}</option>)}
         </select>
       </label>
+      <label>Agent warmup (s)
+        <input
+          type="number" min="5" max="30"
+          value={form.agent_warmup}
+          onChange={e => setForm(f => ({ ...f, agent_warmup: Math.min(30, Math.max(5, parseInt(e.target.value) || 10)) }))}
+        />
+      </label>
       <label>Git repo URL
         <div className="settings-detect-row">
           <input value={form.git_repo_url} onChange={set('git_repo_url')} placeholder="https://..." />
@@ -149,6 +204,51 @@ export default function ProjectSettingsPanel({ project, onClose, onSave, onDelet
         </div>
         {detectError && <span className="settings-detect-error">{detectError}</span>}
       </label>
+
+      <div className="settings-templates-section">
+        <button
+          className="settings-templates-toggle"
+          onClick={() => setShowTemplates(v => !v)}
+        >
+          {showTemplates ? '▾' : '▸'} Agent prompt templates
+        </button>
+        {showTemplates && (
+          <div className="settings-templates-body">
+            <div className="template-tabs">
+              {['planning', 'architect'].map(t => (
+                <button
+                  key={t}
+                  className={`template-tab${activeTemplate === t ? ' active' : ''}`}
+                  onClick={() => setActiveTemplate(t)}
+                >{t}</button>
+              ))}
+            </div>
+            <details className="template-placeholders">
+              <summary>Placeholders</summary>
+              <div className="template-placeholder-list">
+                {TEMPLATE_PLACEHOLDERS[activeTemplate].map(p => (
+                  <code key={p} className="template-placeholder-chip">{p}</code>
+                ))}
+              </div>
+            </details>
+            {templateSource[activeTemplate] === 'global' && (
+              <p className="template-source-note">Showing global default — save to create a project-specific copy.</p>
+            )}
+            <textarea
+              className="template-editor"
+              value={templateContent[activeTemplate] ?? ''}
+              onChange={e => setTemplateContent(prev => ({ ...prev, [activeTemplate]: e.target.value }))}
+              spellCheck={false}
+            />
+            <div className="template-actions">
+              <button className="btn-cancel" onClick={handleTemplateReset}>Reset to global</button>
+              <button className="btn-save" onClick={handleTemplateSave} disabled={templateSaving}>
+                {templateSaving ? 'Saving…' : 'Save template'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="settings-actions">
         <button className="btn-cancel" onClick={onClose}>Cancel</button>

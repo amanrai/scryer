@@ -193,7 +193,8 @@ function NewProjectForm({ onCancel, onCreate }) {
   const [desc, setDesc]       = useState('')
   const [gitBackend, setGitBackend] = useState('forgejo')
   const [gitRepoUrl, setGitRepoUrl] = useState('')
-  const [agent, setAgent]     = useState('claude')
+  const [agent, setAgent]           = useState('claude')
+  const [architectAgent, setArchitectAgent] = useState('claude')
   const [attachOpen, setAttachOpen] = useState(false)
   const [codePathOverride, setCodePathOverride] = useState(null)
   const [saving, setSaving]   = useState(false)
@@ -232,6 +233,8 @@ function NewProjectForm({ onCancel, onCreate }) {
           code_path: codePath,
           git_backend: gitBackend,
           git_repo_url: gitRepoUrl.trim(),
+          planning_agent: agent,
+          architect_agent: architectAgent,
         }),
       })
       const data = await res.json()
@@ -292,6 +295,15 @@ function NewProjectForm({ onCancel, onCreate }) {
       <div className="npf-agent-seg">
         {AGENTS.map(a => (
           <button key={a} type="button" className={`npf-agent-btn${agent === a ? ' active' : ''}`} onClick={() => setAgent(a)}>
+            {a}
+          </button>
+        ))}
+      </div>
+
+      <div className="npf-field-label">Architect agent</div>
+      <div className="npf-agent-seg">
+        {AGENTS.map(a => (
+          <button key={a} type="button" className={`npf-agent-btn${architectAgent === a ? ' active' : ''}`} onClick={() => setArchitectAgent(a)}>
             {a}
           </button>
         ))}

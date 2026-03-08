@@ -183,7 +183,7 @@ export default function ProjectView() {
         const data = await res.json()
         if (data.ok) {
           setLaunchBanner(null)
-          const ps = { session: data.session, entityType: apiType, entityId, entity, agent }
+          const ps = { session: data.session, entityType: apiType, entityId, entity, agent, launchedAt: Date.now(), warmup: data.warmup_ms ?? 10000 }
           setPlanningSession(ps)
           setPlanningOpen(true)
           setPlanningMinimized(false)
@@ -226,7 +226,7 @@ export default function ProjectView() {
       const data = await res.json()
       if (data.ok) {
         setLaunchBanner(null)
-        setArchitectSession({ session: data.session, entityType: apiType, entityId, entity, agent: effectiveAgent })
+        setArchitectSession({ session: data.session, entityType: apiType, entityId, entity, agent: effectiveAgent, launchedAt: Date.now(), warmup: data.warmup_ms ?? 10000 })
         setArchitectOpen(true)
         setArchitectMinimized(false)
         clearMinimized(['architectSession'])
@@ -465,6 +465,8 @@ export default function ProjectView() {
         entityId={planningSession.entityId}
         entity={planningSession.entity}
         agent={planningSession.agent}
+        launchedAt={planningSession.launchedAt}
+        warmup={planningSession.warmup}
         onMinimize={handlePlanningMinimize}
         onClose={handlePlanningClose}
       />
@@ -476,6 +478,9 @@ export default function ProjectView() {
         entityType={architectSession.entityType}
         entityId={architectSession.entityId}
         entity={architectSession.entity}
+        agent={architectSession.agent}
+        launchedAt={architectSession.launchedAt}
+        warmup={architectSession.warmup}
         projectName={project?.name}
         onMinimize={handleArchitectMinimize}
         onClose={handleArchitectClose}

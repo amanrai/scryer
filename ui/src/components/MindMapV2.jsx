@@ -194,6 +194,7 @@ function buildLayout(project, expandedSpId, showClosed, filterLower, ancestorIds
             w: TICKET_W, h, depth: d,
             label: t.title, ticketId: t.id, state: t.state,
             description: t.description ?? '',
+            tags: t.tags ?? [],
             comments: t.comments ?? [],
             blocked_by: t.blocked_by ?? [],
             blocked: (t.blocked_by ?? []).some(b => b.state !== 'Closed'),
@@ -319,10 +320,11 @@ function SpNode({ node, onClick, onLaunch, onEdit }) {
   )
 }
 
-function TicketNode({ node, onSingleClick, onDoubleClick, inDepMode, isSelected }) {
+function TicketNode({ node, onSingleClick, onDoubleClick, inDepMode, isSelected, dimmed }) {
   const bc = node.blockerCount ?? 0
   return (
-    <foreignObject x={node.cx - node.w / 2} y={node.cy - node.h / 2} width={node.w} height={node.h}>
+    <foreignObject x={node.cx - node.w / 2} y={node.cy - node.h / 2} width={node.w} height={node.h}
+      style={{ opacity: dimmed ? 0.2 : 1, transition: 'opacity 0.2s ease' }}>
       <div
         className={`v2n-ticket${node.state === 'Closed' ? ' v2n-ticket--closed' : ''}${isSelected ? ' v2n-ticket--selected' : ''}`}
         onClick={() => (node.blockerCount > 0 && !inDepMode) ? onSingleClick(node) : onDoubleClick(node)}
@@ -342,9 +344,31 @@ function TicketNode({ node, onSingleClick, onDoubleClick, inDepMode, isSelected 
 // ── Ticket detail modal ────────────────────────────────────────────────────────
 
 function TaskModal({ node, onClose, onLaunch }) {
-  const [commentDraft, setCommentDraft] = useState('')
+  const [commentDraft, setCommentDraft]   = useState('')
   const [commentSaving, setCommentSaving] = useState(false)
   const [localComments, setLocalComments] = useState([])
+  const [tags, setTags]                   = useState(node.tags ?? [])
+  const [tagInput, setTagInput]           = useState('')
+  const [tagSaving, setTagSaving]         = useState(false)
+
+  async function addTag() {
+    const tag = tagInput.trim().toLowerCase().replace(/\s+/g, '-')
+    if (!tag || tagSaving || tags.includes(tag)) return
+    setTagSaving(true)
+    try {
+      const res = await fetch(`/api/tickets/${node.ticketId}/tags`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag }),
+      })
+      if (res.ok) { setTags(prev => [...prev, tag].sort()); setTagInput('') }
+    } finally { setTagSaving(false) }
+  }
+
+  async function removeTag(tag) {
+    await fetch(`/api/tickets/${node.ticketId}/tags/${encodeURIComponent(tag)}`, { method: 'DELETE' })
+    setTags(prev => prev.filter(t => t !== tag))
+  }
 
   async function submitComment() {
     if (!commentDraft.trim() || commentSaving) return
@@ -411,6 +435,21 @@ function TaskModal({ node, onClose, onLaunch }) {
           ? <p className="mm-modal-desc">{node.description}</p>
           : <p className="mm-modal-desc mm-modal-empty">No description.</p>
         }
+        <div className="mm-modal-tags">
+          {tags.map(tag => (
+            <span key={tag} className="mm-tag-chip" onClick={() => removeTag(tag)} title="Remove tag">
+              {tag} ✕
+            </span>
+          ))}
+          <input
+            className="mm-tag-input"
+            placeholder="Add tag…"
+            value={tagInput}
+            onChange={e => setTagInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag() } }}
+            disabled={tagSaving}
+          />
+        </div>
         {node.blocked_by?.length > 0 && (
           <div className="mm-modal-blockers">
             <div className="mm-modal-section-label">Blocked by</div>
@@ -465,10 +504,11 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
   const [containerW, setContainerW]     = useState(0)
   const [expandedSp, setExpandedSp]     = useState(null)
   const [showClosed, setShowClosed]     = useState(true)
-  const [selectedNode, setSelectedNode] = useState(null)
-  const [editingNode, setEditingNode]   = useState(null)
-  const [depTicketId, setDepTicketId]   = useState(null)
-  const [preDepExpanded, setPreDepExpanded] = useState(null)
+  const [selectedNode, setSelectedNode]       = useState(null)
+  const [editingNode, setEditingNode]         = useState(null)
+  const [depTicketId, setDepTicketId]         = useState(null)
+  const [preDepExpanded, setPreDepExpanded]   = useState(null)
+  const [tagFilter, setTagFilter]             = useState('')
 
   // Measure container width
   useEffect(() => {
@@ -537,6 +577,12 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
         {depTicketId != null && (
           <button className="v2-exit-dep" onClick={exitDepMode}>✕ Exit dependency mode</button>
         )}
+        <input
+          className="v2-tag-filter"
+          placeholder="Filter by tag…"
+          value={tagFilter}
+          onChange={e => setTagFilter(e.target.value.trim().toLowerCase())}
+        />
         <label className="mindmap-toggle" style={{ marginLeft: 'auto' }}>
           <input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} />
           Show closed paths
@@ -549,6 +595,9 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
         height={totalH}
         style={{ display: 'block', overflow: 'visible' }}
       >
+        {/* Invisible hit area for deselect on double-click */}
+        <rect width="100%" height="100%" fill="transparent" onDoubleClick={() => setSelectedNode(null)} />
+
         {/* Edges */}
         <g className="v2-edges">
           {edgePaths.map((ep, i) => (
@@ -599,6 +648,7 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
             )
           }
           if (node.type === 'ticket') {
+            const tagMatch = !tagFilter || (node.tags ?? []).includes(tagFilter)
             return (
               <TicketNode
                 key={node.id}
@@ -607,6 +657,7 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
                 onDoubleClick={setSelectedNode}
                 inDepMode={depTicketId != null}
                 isSelected={node.ticketId === depTicketId}
+                dimmed={!tagMatch}
               />
             )
           }

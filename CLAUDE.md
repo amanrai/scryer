@@ -105,6 +105,37 @@ Human
            └─► pm-local MCP (tickets, heartbeats, git ops)
 ```
 
+## The pipeline
+
+Every stage is the same shape: specialised agent, tmux session, output artifact, human review gate.
+
+```
+Plan → Architect → Execute → Secure → Deploy
+```
+
+**Council Review** is orthogonal to the pipeline — invoke it at any stage on any artifact.
+
+### Stages built
+| Stage | Launcher | Artifact |
+|---|---|---|
+| Plan | `planning/launch.py` | `plan.md` |
+| Architect | `architect/launch.py` | `proposal.json` |
+
+### Stages to design + build
+- **Execute** — picks up tickets, runs them autonomously; needs scoped tokens + heartbeat
+- **Secure** — security analysis agent; same shape as Architect
+- **Deploy** — deployment plan + execution agent
+- **Ops** — operations agent (ticket TBD)
+
+### Council Review
+Multi-agent review, invokable at any stage on any artifact. User defines reviewer personalities (configurable library). Agents debate via PM ticket comments (token-passing daisy chain), converge, produce actionable suggestions + open questions. **Needs extensive design before building.**
+
+### Orchestrator
+Coordinates which stage runs, on what, in what order. Manages parallelism from the dependency graph. **Needs extensive discussion before designing.**
+
+### Launcher refactor (T95)
+All stage launchers will eventually be unified into a single `launcher/launch.py --stage <stage>`. Do not build until all stages are designed and orchestrator interface is settled.
+
 ## Planned (not yet built)
 
 - **T17** — Review gate enforcement in MCP (AGENT_KEY / HUMAN_KEY)
@@ -115,5 +146,6 @@ Human
 - **T8** — Heartbeat tool
 - **T9** — Scoped agent token system
 - **T10** — Shell command sandbox
-- **T11** — Minimal orchestrator
+- **T11** — Minimal orchestrator (superseded by pipeline design above)
 - **T12** — agents.md generation
+- **T95** — Launcher refactor

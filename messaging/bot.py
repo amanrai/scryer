@@ -97,7 +97,7 @@ def _format_log(row) -> str | None:
         content = details.get("content", row["message"])
         snippet = content[:200] + ("\u2026" if len(content) > 200 else "")
         return f"\U0001f4ac {prefix}{ticket_part}{snippet}{actor_tag}"
-    elif action in ("create_ticket", "create"):
+    elif action in ("create_ticket", "create", "ticket_created"):
         return f"\u2705 {prefix}{ticket_part}created{actor_tag}"
     elif action == "delete":
         return None
@@ -119,6 +119,7 @@ class ScryerBot(discord.Client):
         super().__init__(**kwargs)
         self._updates_channel: discord.TextChannel | None = None
         self._last_log_id: int = 0
+        self._tail_task: asyncio.Task | None = None
 
     def _init_last_log_id(self):
         conn = sqlite3.connect(DB_PATH)
@@ -143,7 +144,10 @@ class ScryerBot(discord.Client):
 
 
         self._init_last_log_id()
-        asyncio.ensure_future(self._tail_logs())
+        # Cancel any previous tail loop (can fire on reconnects) before starting a fresh one
+        if self._tail_task and not self._tail_task.done():
+            self._tail_task.cancel()
+        self._tail_task = asyncio.ensure_future(self._tail_logs())
 
     async def _send_update(self, text: str):
         if self._updates_channel is None:

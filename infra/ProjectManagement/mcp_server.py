@@ -507,5 +507,63 @@ def list_tokens(ticket_id: int | None = None) -> str:
     return json.dumps({"tokens": tokens})
 
 
+@mcp.tool()
+def generate_uuids(count: int = 1) -> str:
+    """
+    Generate `count` fresh UUID4 strings (default 1, max 50).
+    Returns { "uuids": ["...", ...] }
+    Use this to get IDs for proposal.json items instead of shelling out to Python.
+    """
+    import uuid
+    count = max(1, min(count, 50))
+    return json.dumps({"uuids": [str(uuid.uuid4()) for _ in range(count)]})
+
+
+# ---------------------------------------------------------------------------
+# Tags (T102)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def add_tag(ticket_id: int, tag: str) -> str:
+    """
+    Add a tag to a ticket. Creates the tag if it doesn't exist.
+    Tags are normalised: stripped, lowercased, spaces replaced with '-'.
+    """
+    try:
+        result = db.add_tag(ticket_id, tag)
+        return json.dumps({"status": "ok", **result})
+    except ValueError as e:
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+@mcp.tool()
+def remove_tag(ticket_id: int, tag: str) -> str:
+    """
+    Remove a tag from a ticket. Does not delete the tag itself.
+    """
+    try:
+        result = db.remove_tag(ticket_id, tag)
+        return json.dumps({"status": "ok", **result})
+    except ValueError as e:
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+@mcp.tool()
+def list_tags() -> str:
+    """
+    List all tags in the system with usage counts, sorted by name.
+    """
+    return json.dumps({"tags": db.list_tags()})
+
+
+@mcp.tool()
+def list_tickets_by_tag(tag: str) -> str:
+    """
+    List all tickets with a given tag, across all projects.
+    Returns id, title, state, priority, project_id, location for each ticket.
+    """
+    return json.dumps({"tickets": db.list_tickets_by_tag(tag)})
+
+
 if __name__ == "__main__":
     mcp.run()
