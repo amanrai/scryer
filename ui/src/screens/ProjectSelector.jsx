@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ProjectSettingsPanel from '../components/ProjectSettingsPanel.jsx'
+import AgentPermissionsPanel from '../components/AgentPermissionsPanel.jsx'
 import { useTheme } from '../App.jsx'
 
 const GIT_BACKENDS = ['', 'forgejo', 'github', 'gitlab']
@@ -15,9 +16,10 @@ const AGENTS       = ['claude', 'codex', 'gemini']
 
 function GlobalConfigPanel({ onClose }) {
   const [form, setForm]   = useState({ scryer_root: '', code_root: '', discord_token: '', discord_server_id: '', oracle_provider: 'claude', oracle_model: 'claude-haiku-4-5-20251001' })
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving]   = useState(false)
-  const { theme, setTheme }   = useTheme()
+  const [loading, setLoading]           = useState(true)
+  const [saving, setSaving]             = useState(false)
+  const [agentPermsOpen, setAgentPermsOpen] = useState(false)
+  const { theme, setTheme }             = useTheme()
 
   useEffect(() => {
     fetch('/api/config')
@@ -99,8 +101,12 @@ function GlobalConfigPanel({ onClose }) {
             <button className="btn-cancel" onClick={onClose}>Cancel</button>
             <button className="btn-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
           </div>
+          <button className="btn-agent-perms" onClick={() => setAgentPermsOpen(true)}>
+            Configure Default Allowed Actions For Agents
+          </button>
         </>
       )}
+      {agentPermsOpen && <AgentPermissionsPanel onClose={() => setAgentPermsOpen(false)} />}
     </div>
   )
 }
@@ -197,6 +203,7 @@ function NewProjectForm({ onCancel, onCreate }) {
   const [architectAgent, setArchitectAgent] = useState('claude')
   const [attachOpen, setAttachOpen] = useState(false)
   const [codePathOverride, setCodePathOverride] = useState(null)
+  const [onCreation, setOnCreation] = useState('nothing')
   const [saving, setSaving]   = useState(false)
   const [err, setErr]         = useState(null)
 
@@ -209,7 +216,7 @@ function NewProjectForm({ onCancel, onCreate }) {
 
   const derivedCodePath    = config.code_root && name.trim() ? `${config.code_root}/${name.trim()}` : ''
   const codePath           = codePathOverride ?? derivedCodePath
-  const planningFolder     = config.scryer_root && name.trim() ? `${config.scryer_root}/${name.trim()}/` : ''
+  const planningFolder     = codePath ? `${codePath}/.scryer/` : ''
 
   const handleAttach = ({ name: n, description: d, codePath: cp }) => {
     if (n)  setName(n)
@@ -240,7 +247,7 @@ function NewProjectForm({ onCancel, onCreate }) {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed')
 
-      onCreate(data.project, agent)
+      onCreate(data.project, agent, onCreation)
     } catch (e) {
       setErr(e.message)
     } finally {
@@ -265,12 +272,13 @@ function NewProjectForm({ onCancel, onCreate }) {
         <input value={desc} onChange={e => setDesc(e.target.value)} placeholder="(optional)" />
       </label>
 
-      <div className="npf-readonly-row">
-        <span className="npf-readonly-label">Code path</span>
-        <span className={`npf-readonly-value${!codePath ? ' npf-readonly-muted' : ''}`}>
-          {codePath || (codeRootMissing ? 'Set a default code root in ⚙ Global Config first' : '—')}
-        </span>
-      </div>
+      <label>Base path
+        <input
+          value={codePathOverride ?? derivedCodePath}
+          onChange={e => setCodePathOverride(e.target.value || null)}
+          placeholder={codeRootMissing ? 'Set a default code root in ⚙ Global Config first' : derivedCodePath || '~/Code/my-project'}
+        />
+      </label>
 
       <div className="npf-readonly-row">
         <span className="npf-readonly-label">Planning folder</span>
@@ -313,6 +321,15 @@ function NewProjectForm({ onCancel, onCreate }) {
         {attachOpen ? '▾' : '▸'} Attach to existing codebase
       </button>
       {attachOpen && <AttachPanel onAttach={handleAttach} />}
+
+      <label>On project creation
+        <select value={onCreation} onChange={e => setOnCreation(e.target.value)}>
+          <option value="plan">Launch the planning agent</option>
+          <option value="editor">Launch the plan editor</option>
+          <option value="architect">Analyse existing code</option>
+          <option value="nothing">Do nothing</option>
+        </select>
+      </label>
 
       {err && <span className="new-project-err">{err}</span>}
 
@@ -397,10 +414,12 @@ export default function ProjectSelector() {
       {creating && (
         <NewProjectForm
           onCancel={() => setCreating(false)}
-          onCreate={(p, agent) => {
+          onCreate={(p, agent, onCreation) => {
             setProjects(ps => [...ps, p])
             setCreating(false)
-            navigate(`/projects/${p.name}?firstRun=1&agent=${agent}`)
+            navigate(onCreation !== 'nothing'
+              ? `/projects/${p.name}?firstRun=${onCreation}&agent=${agent}`
+              : `/projects/${p.name}`)
           }}
         />
       )}

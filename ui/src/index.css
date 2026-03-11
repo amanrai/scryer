@@ -165,7 +165,7 @@ body {
 
 /* Project selector */
 .selector-page {
-  max-width: 620px;
+  max-width: 960px;
   margin: 0 auto;
   padding: 4rem 1.5rem;
 }
@@ -504,6 +504,19 @@ body {
   color: var(--red, #e06c75);
   margin-top: 0.25rem;
 }
+
+.btn-analyse {
+  background: none;
+  border: 1px solid var(--blue, #61afef);
+  color: var(--blue, #61afef);
+  border-radius: 4px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  width: 100%;
+  margin-top: 0.5rem;
+}
+.btn-analyse:hover { background: var(--blue, #61afef); color: #fff; }
 
 .btn-delete {
   background: none;
@@ -1812,7 +1825,9 @@ body {
   width: 60vw;
   max-width: 60vw;
   max-height: 80vh;
-  overflow-y: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -1830,6 +1845,13 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 0.6rem;
+}
+
+.mm-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  margin-top: 0.75rem;
 }
 
 .mm-modal-state {
@@ -1942,6 +1964,41 @@ body {
   color: var(--text);
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.mm-modal-comment-body {
+  font-size: 0.8rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.mm-modal-comment-body p { margin: 0.25rem 0; }
+
+.mm-modal-comment-body table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.mm-modal-comment-body th,
+.mm-modal-comment-body td {
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+}
+
+.mm-modal-comment-body th {
+  background: var(--bg-hover);
+  font-weight: 600;
+}
+
+.mm-modal-comment-body code {
+  background: var(--bg);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.75rem;
 }
 
 /* Dockable terminal panel */
@@ -3175,6 +3232,7 @@ body {
   color: var(--red);
 }
 
+
 .npf-footer-note {
   font-size: 0.72rem;
   color: var(--text-muted);
@@ -3392,3 +3450,256 @@ body {
   line-height: 1.35;
   word-break: break-word;
 }
+
+/* ── Agent permissions panel ───────────────────────────────────────────────── */
+
+.btn-agent-perms {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 7px 12px;
+  background: transparent;
+  color: var(--blue);
+  border: 1px solid var(--blue);
+  border-radius: 6px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-align: center;
+}
+.btn-agent-perms:hover { background: color-mix(in srgb, var(--blue) 12%, transparent); }
+
+.agent-perms-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-perms-dialog {
+  width: 80vw;
+  height: 80vh;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px 20px 12px;
+}
+
+.agent-perms-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0;
+}
+
+.agent-perms-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 18px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--text-muted);
+  font-size: 0.83rem;
+  cursor: pointer;
+  position: relative;
+  bottom: -1px;
+}
+.agent-perms-tab-icon {
+  display: flex;
+  align-items: center;
+  opacity: 0.7;
+}
+.agent-perms-tab.active .agent-perms-tab-icon { opacity: 1; }
+
+.agent-perms-tab:hover { color: var(--text); }
+.agent-perms-tab.active {
+  border-color: var(--border);
+  border-bottom-color: var(--bg-panel);
+  color: var(--text);
+  background: var(--bg-panel);
+  font-weight: 600;
+}
+
+.agent-perms-loading {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  padding: 8px 0;
+}
+
+.agent-perms-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 14px;
+}
+
+.agent-perms-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-perms-section-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.agent-perms-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.agent-perms-label {
+  font-size: 0.83rem;
+  color: var(--text);
+  flex: 1;
+}
+
+.agent-perms-toggle {
+  min-width: 52px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid;
+  transition: background 0.1s, color 0.1s;
+  text-align: center;
+}
+.agent-perms-toggle.allow {
+  background: color-mix(in srgb, var(--green) 15%, transparent);
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 40%, transparent);
+}
+.agent-perms-toggle.allow:hover {
+  background: color-mix(in srgb, var(--green) 25%, transparent);
+}
+.agent-perms-toggle.deny {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 35%, transparent);
+}
+.agent-perms-toggle.deny:hover {
+  background: color-mix(in srgb, var(--red) 22%, transparent);
+}
+
+/* ── Council badges & modal ────────────────────────────────────────────────── */
+
+.v2n-council-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  margin-left: 4px;
+  vertical-align: middle;
+  color: #fff;
+  opacity: 0.85;
+  transition: opacity 0.15s;
+  user-select: none;
+}
+.v2n-council-badge:hover { opacity: 1; }
+
+.council-modal { max-width: 680px; max-height: 80vh; display: flex; flex-direction: column; }
+.council-modal-body { flex: 1; overflow-y: auto; padding: 0 20px 20px; }
+
+.council-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.council-state-chip {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  color: #fff;
+  text-transform: capitalize;
+}
+.council-round, .council-members {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.council-section { margin-bottom: 20px; }
+
+.council-member-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.council-member-chip {
+  font-size: 0.78rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.council-member-chip.removed { opacity: 0.4; text-decoration: line-through; }
+
+.council-thread { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+
+.council-comment {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.council-comment--human { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface2)); }
+
+.council-comment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.council-comment-author { font-size: 0.8rem; font-weight: 600; color: var(--text); }
+.council-comment-round  { font-size: 0.72rem; color: var(--text-muted); }
+.council-comment-ts     { font-size: 0.72rem; color: var(--text-muted); margin-left: auto; }
+.council-comment-body   { font-size: 0.83rem; color: var(--text); line-height: 1.55; }
+.council-comment-body p { margin: 0 0 6px; }
+.council-comment-body p:last-child { margin-bottom: 0; }
+
+.council-action {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: 6px;
+}
+.council-action--accepted { border-color: var(--green); }
+.council-action--rejected { opacity: 0.5; }
+
+.council-action-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 0.77rem;
+}
+.council-action-type   { font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.council-action-ticket { font-weight: 600; color: var(--accent); }
+.council-action-status { margin-left: auto; color: var(--text-muted); }
+.council-action-author { color: var(--text-muted); }
+.council-action-content { font-size: 0.83rem; color: var(--text); }

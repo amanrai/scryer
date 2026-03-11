@@ -1,5 +1,170 @@
-import { useMemo, useState, useRef, useEffect } from 'react'
+import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
+import { marked } from 'marked'
 import PlanEditor from './PlanEditor.jsx'
+
+// ── Council helpers ─────────────────────────────────────────────────────────────
+
+const COUNCIL_STATE_COLOR = {
+  active:       '#61afef',
+  action_round: '#e5c07b',
+  archived:     '#4a5060',
+}
+
+function CouncilBadge({ debate, onClick }) {
+  const color = COUNCIL_STATE_COLOR[debate.state] ?? '#61afef'
+  return (
+    <span
+      className="v2n-council-badge"
+      style={{ background: color }}
+      title={`Council debate — ${debate.state} (round ${debate.round})`}
+      onClick={e => { e.stopPropagation(); onClick(debate) }}
+    >⚖</span>
+  )
+}
+
+// ── Council debate modal ────────────────────────────────────────────────────────
+
+function CouncilDebateModal({ debate: initialDebate, onClose, entityType, entityId, entityLabel }) {
+  const [debate, setDebate]     = useState(initialDebate)
+  const [data, setData]         = useState(null)
+  const [loading, setLoading]   = useState(true)
+  const [launching, setLaunching] = useState(false)
+
+  async function load(d) {
+    if (!d) return
+    setLoading(true)
+    try {
+      const r = await fetch(`/api/debates/${d.id}`)
+      const j = await r.json()
+      setData(j)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function launchCouncil() {
+    setLaunching(true)
+    try {
+      const res = await fetch('/api/council/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity_type: entityType, entity_id: entityId }),
+      })
+      const j = await res.json()
+      if (!res.ok) throw new Error(j.error)
+      // Poll for debate to appear
+      let tries = 0
+      while (tries++ < 20) {
+        await new Promise(r => setTimeout(r, 1000))
+        const dr = await fetch(`/api/debates?entity_type=${entityType}&entity_id=${encodeURIComponent(entityId)}`)
+        if (dr.ok) {
+          const dj = await dr.json()
+          if (dj.debate) { setDebate(dj.debate); break }
+        }
+      }
+    } catch (e) {
+      alert(e.message)
+    } finally {
+      setLaunching(false)
+    }
+  }
+
+  useEffect(() => { load(debate) }, [debate?.id])
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div className="mm-modal-backdrop" onClick={onClose}>
+      <div className="mm-modal council-modal" onClick={e => e.stopPropagation()}>
+        <div className="mm-modal-actions">
+          <button className="mm-modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="mm-modal-header">
+          <span className="v2n-council-badge" style={{ background: COUNCIL_STATE_COLOR[debate?.state] ?? '#61afef', marginRight: 8, fontSize: 14 }}>⚖</span>
+          <h2 className="mm-modal-title">Council — {entityLabel}</h2>
+        </div>
+
+        {!debate ? (
+          <div className="council-modal-body">
+            <p className="mm-modal-desc mm-modal-empty">No council debate yet for this entity.</p>
+            <button className="btn-save" onClick={launchCouncil} disabled={launching}>
+              {launching ? 'Launching…' : 'Launch Council'}
+            </button>
+          </div>
+        ) : (
+          <div className="council-modal-body">
+            <div className="council-meta">
+              <span className="council-state-chip" style={{ background: COUNCIL_STATE_COLOR[debate.state] }}>{debate.state}</span>
+              <span className="council-round">Round {debate.round}</span>
+              {data?.members && <span className="council-members">{data.members.length} personas</span>}
+            </div>
+
+            {loading && <p className="mm-modal-desc">Loading…</p>}
+
+            {!loading && data && (
+              <>
+                {data.members?.length > 0 && (
+                  <div className="council-section">
+                    <div className="mm-modal-section-label">Members</div>
+                    <div className="council-member-list">
+                      {data.members.map(m => (
+                        <span key={m.id} className={`council-member-chip ${m.state === 'removed' ? 'removed' : ''}`}>
+                          {m.persona_name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {data.comments?.length > 0 && (
+                  <div className="council-section">
+                    <div className="mm-modal-section-label">Discussion ({data.comments.length} comments)</div>
+                    <div className="council-thread">
+                      {data.comments.map(c => (
+                        <div key={c.id} className={`council-comment ${c.author === 'human' ? 'council-comment--human' : ''}`}>
+                          <div className="council-comment-header">
+                            <span className="council-comment-author">{c.persona_name || c.author}</span>
+                            <span className="council-comment-round">R{c.round}</span>
+                            <span className="council-comment-ts">{new Date(c.created_at).toLocaleString()}</span>
+                          </div>
+                          <div className="council-comment-body" dangerouslySetInnerHTML={{ __html: marked.parse(c.content ?? '') }} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {data.actions?.length > 0 && (
+                  <div className="council-section">
+                    <div className="mm-modal-section-label">Action Proposals</div>
+                    {data.actions.map(a => (
+                      <div key={a.id} className={`council-action council-action--${a.status}`}>
+                        <div className="council-action-header">
+                          <span className="council-action-type">{a.action_type}</span>
+                          {a.ticket_id && <span className="council-action-ticket">T{a.ticket_id}</span>}
+                          <span className="council-action-status">{a.status}</span>
+                          <span className="council-action-author">{a.persona_name || 'human'}</span>
+                        </div>
+                        <div className="council-action-content">{a.content}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {data.comments?.length === 0 && data.actions?.length === 0 && (
+                  <p className="mm-modal-desc mm-modal-empty">Debate is active. Agent personas are being set up.</p>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -89,11 +254,12 @@ function buildLayout(project, expandedSpId, showClosed, filterLower, ancestorIds
 
   const avail = containerW - PAD_H * 2
 
-  // Root node
+  // Root node — width grows with project name (approx 9px per char + padding)
+  const rootW = Math.max(ROOT_W, project.name.length * 9 + 48)
   const rootNode = {
     id: 'root', type: 'root',
     cx: containerW / 2, cy: Y_ROOT + ROOT_H / 2,
-    w: ROOT_W, h: ROOT_H,
+    w: rootW, h: ROOT_H,
     label: project.name, entityId: project.id,
   }
   nodeMap.root = rootNode
@@ -241,7 +407,7 @@ function buildLayout(project, expandedSpId, showClosed, filterLower, ancestorIds
 
 // ── Node renderer (SVG foreignObject for rich HTML nodes) ─────────────────────
 
-function RootNode({ node, onLaunch, onEdit, onSettings, onDeselect }) {
+function RootNode({ node, onLaunch, onEdit, onSettings, onDeselect, debate, onCouncil }) {
   const [hover, setHover] = useState(false)
   const leaveTimer = useRef(null)
   function handleEnter() { clearTimeout(leaveTimer.current); setHover(true) }
@@ -255,6 +421,7 @@ function RootNode({ node, onLaunch, onEdit, onSettings, onDeselect }) {
         onMouseLeave={handleLeave}
       >
         <span>{node.label}</span>
+        {debate && <CouncilBadge debate={debate} onClick={onCouncil} />}
         {hover && (
           <div className="v2n-toolbar">
             {onLaunch && (
@@ -277,6 +444,11 @@ function RootNode({ node, onLaunch, onEdit, onSettings, onDeselect }) {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
               </button>
             )}
+            {onCouncil && (
+              <button className="mm-tb-btn" data-tip="Council" onClick={e => { e.stopPropagation(); onCouncil(debate ?? null, { entityType: 'project', entityId: node.entityId, entityLabel: node.label }) }}>
+                <span style={{ fontSize: 11, lineHeight: 1 }}>⚖</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -284,7 +456,7 @@ function RootNode({ node, onLaunch, onEdit, onSettings, onDeselect }) {
   )
 }
 
-function SpNode({ node, onClick, onLaunch, onEdit }) {
+function SpNode({ node, onClick, onLaunch, onEdit, debate, onCouncil }) {
   const [hover, setHover] = useState(false)
   const leaveTimer = useRef(null)
   function handleEnter() { clearTimeout(leaveTimer.current); setHover(true) }
@@ -302,6 +474,7 @@ function SpNode({ node, onClick, onLaunch, onEdit }) {
       >
         <span className="v2n-sp-name">{node.label}</span>
         <span className="v2n-sp-count">{count}</span>
+        {debate && <CouncilBadge debate={debate} onClick={d => onCouncil?.(d, { entityType: 'subproject', entityId: node.entityId, entityLabel: node.label })} />}
         {hover && onLaunch && (
           <div className="v2n-toolbar">
             <button className="mm-tb-btn" data-tip="Plan" onClick={e => { e.stopPropagation(); onLaunch('plan', null, entity) }}>
@@ -313,6 +486,11 @@ function SpNode({ node, onClick, onLaunch, onEdit }) {
             <button className="mm-tb-btn" data-tip="Architect" onClick={e => { e.stopPropagation(); onLaunch('architect', null, entity) }}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="7" y1="22" x2="7" y2="4"/><line x1="3" y1="4" x2="21" y2="4"/><line x1="7" y1="4" x2="3" y2="8"/><line x1="7" y1="12" x2="21" y2="4"/><line x1="17" y1="4" x2="17" y2="14"/><rect x="14" y="14" width="6" height="4" rx="1"/></svg>
             </button>
+            {onCouncil && (
+              <button className="mm-tb-btn" data-tip="Council" onClick={e => { e.stopPropagation(); onCouncil(debate ?? null, { entityType: 'subproject', entityId: node.entityId, entityLabel: node.label }) }}>
+                <span style={{ fontSize: 11, lineHeight: 1 }}>⚖</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -320,7 +498,7 @@ function SpNode({ node, onClick, onLaunch, onEdit }) {
   )
 }
 
-function TicketNode({ node, onSingleClick, onDoubleClick, inDepMode, isSelected, dimmed }) {
+function TicketNode({ node, onSingleClick, onDoubleClick, inDepMode, isSelected, dimmed, debate, onCouncil }) {
   const bc = node.blockerCount ?? 0
   return (
     <foreignObject x={node.cx - node.w / 2} y={node.cy - node.h / 2} width={node.w} height={node.h}
@@ -334,6 +512,9 @@ function TicketNode({ node, onSingleClick, onDoubleClick, inDepMode, isSelected,
           <span className="v2n-dot" style={{ background: STATE_COLOR[node.state] ?? STATE_COLOR['Unopened'] }} />
           <span className="v2n-tid">T{node.ticketId}</span>
           {bc > 0 && <span className="v2n-badge">{bc}</span>}
+          {debate && (
+            <CouncilBadge debate={debate} onClick={d => onCouncil?.(d, { entityType: 'ticket', entityId: node.ticketId, entityLabel: node.label })} />
+          )}
         </div>
         <div className="v2n-ticket-title">{node.label}</div>
       </div>
@@ -343,7 +524,7 @@ function TicketNode({ node, onSingleClick, onDoubleClick, inDepMode, isSelected,
 
 // ── Ticket detail modal ────────────────────────────────────────────────────────
 
-function TaskModal({ node, onClose, onLaunch }) {
+function TaskModal({ node, onClose, onLaunch, debate, onCouncil }) {
   const [commentDraft, setCommentDraft]   = useState('')
   const [commentSaving, setCommentSaving] = useState(false)
   const [localComments, setLocalComments] = useState([])
@@ -417,6 +598,12 @@ function TaskModal({ node, onClose, onLaunch }) {
               </svg>
             </button>
           </>)}
+          {onCouncil && (
+            <button className="mm-tb-btn" data-tip="Council" title="View / launch council debate"
+              onClick={e => { e.stopPropagation(); onClose(); onCouncil(debate ?? null, { entityType: 'ticket', entityId: node.ticketId, entityLabel: node.label }) }}>
+              <span style={{ fontSize: 13, lineHeight: 1 }}>⚖</span>
+            </button>
+          )}
           <button className="mm-modal-delete" onClick={handleDelete} title="Delete ticket">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="3 6 5 6 21 6"/>
@@ -431,6 +618,7 @@ function TaskModal({ node, onClose, onLaunch }) {
           <span className="mm-modal-state" style={{ background: STATE_COLOR[node.state] ?? STATE_COLOR['Unopened'] }} />
           <h2 className="mm-modal-title"><span className="mm-modal-id">T{node.ticketId}</span>{node.label}</h2>
         </div>
+        <div className="mm-modal-body">
         {node.description
           ? <p className="mm-modal-desc">{node.description}</p>
           : <p className="mm-modal-desc mm-modal-empty">No description.</p>
@@ -471,7 +659,7 @@ function TaskModal({ node, onClose, onLaunch }) {
               {[...(node.comments ?? []), ...localComments].map(c => (
                 <li key={c.id} className="mm-modal-comment">
                   <span className="mm-modal-comment-ts">{new Date(c.created_at).toLocaleString()}</span>
-                  <p>{c.content}</p>
+                  <div className="mm-modal-comment-body" dangerouslySetInnerHTML={{ __html: marked.parse(c.content ?? '') }} />
                 </li>
               ))}
             </ul>
@@ -492,6 +680,7 @@ function TaskModal({ node, onClose, onLaunch }) {
             </button>
           </div>
         </div>
+        </div>
       </div>
     </div>
   )
@@ -499,7 +688,7 @@ function TaskModal({ node, onClose, onLaunch }) {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }) {
+export default function MindMapV2({ project, onLaunch, onSettings, filter = '', autoOpenEditor = false, onAutoOpenEditorDone, debates = [] }) {
   const containerRef                    = useRef(null)
   const [containerW, setContainerW]     = useState(0)
   const [expandedSp, setExpandedSp]     = useState(null)
@@ -509,6 +698,20 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
   const [depTicketId, setDepTicketId]         = useState(null)
   const [preDepExpanded, setPreDepExpanded]   = useState(null)
   const [tagFilter, setTagFilter]             = useState('')
+  const [councilModal, setCouncilModal]       = useState(null)  // {debate, entityType, entityId, entityLabel}
+
+  // Build a lookup: "entityType:entityId" → debate
+  const debateMap = useMemo(() => {
+    const m = {}
+    for (const d of debates) {
+      m[`${d.entity_type}:${d.entity_id}`] = d
+    }
+    return m
+  }, [debates])
+
+  const openCouncil = useCallback((debate, { entityType, entityId, entityLabel }) => {
+    setCouncilModal({ debate, entityType, entityId: String(entityId), entityLabel })
+  }, [])
 
   // Measure container width
   useEffect(() => {
@@ -570,6 +773,12 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
     setEditingNode(entity)
   }
 
+  useEffect(() => {
+    if (!autoOpenEditor) return
+    setEditingNode({ type: 'root', label: project.name, entityId: project.id })
+    onAutoOpenEditorDone?.()
+  }, [autoOpenEditor]) // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div ref={containerRef} className="v2-container">
       {/* Controls */}
@@ -624,6 +833,7 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
           } : undefined
 
           if (node.type === 'root') {
+            const rootDebate = debateMap[`project:${project.name}`] ?? debateMap[`project:${node.entityId}`] ?? null
             return (
               <RootNode
                 key={node.id}
@@ -632,10 +842,13 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
                 onEdit={handleEdit}
                 onSettings={onSettings}
                 onDeselect={() => { setExpandedSp(null); setDepTicketId(null) }}
+                debate={rootDebate}
+                onCouncil={openCouncil}
               />
             )
           }
           if (node.type === 'subproject') {
+            const spDebate = debateMap[`subproject:${node.entityId}`] ?? null
             return (
               <g key={node.id} style={style}>
                 <SpNode
@@ -643,12 +856,15 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
                   onClick={toggleSp}
                   onLaunch={onLaunch}
                   onEdit={handleEdit}
+                  debate={spDebate}
+                  onCouncil={openCouncil}
                 />
               </g>
             )
           }
           if (node.type === 'ticket') {
             const tagMatch = !tagFilter || (node.tags ?? []).includes(tagFilter)
+            const ticketDebate = debateMap[`ticket:${node.ticketId}`] ?? null
             return (
               <TicketNode
                 key={node.id}
@@ -658,6 +874,8 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
                 inDepMode={depTicketId != null}
                 isSelected={node.ticketId === depTicketId}
                 dimmed={!tagMatch}
+                debate={ticketDebate}
+                onCouncil={openCouncil}
               />
             )
           }
@@ -666,11 +884,27 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '' }
       </svg>
 
       {selectedNode && (
-        <TaskModal node={selectedNode} onClose={() => setSelectedNode(null)} onLaunch={onLaunch} />
+        <TaskModal
+          node={selectedNode}
+          onClose={() => setSelectedNode(null)}
+          onLaunch={onLaunch}
+          debate={debateMap[`ticket:${selectedNode.ticketId}`] ?? null}
+          onCouncil={openCouncil}
+        />
       )}
 
       {editingNode && (
         <PlanEditor node={editingNode} onClose={() => setEditingNode(null)} />
+      )}
+
+      {councilModal && (
+        <CouncilDebateModal
+          debate={councilModal.debate}
+          entityType={councilModal.entityType}
+          entityId={councilModal.entityId}
+          entityLabel={councilModal.entityLabel}
+          onClose={() => setCouncilModal(null)}
+        />
       )}
     </div>
   )

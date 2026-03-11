@@ -1,0 +1,110 @@
+{
+  "sections": [
+    {
+      "id": "filesystem",
+      "label": "Filesystem",
+      "items": [
+        { "id": "read",  "label": "Read files",         "default": "allow" },
+        { "id": "write", "label": "Write files",        "default": "allow" },
+        { "id": "edit",  "label": "Edit files",         "default": "allow" },
+        { "id": "glob",  "label": "File search (Glob)", "default": "allow" },
+        { "id": "grep",  "label": "Content search (Grep)", "default": "allow" }
+      ]
+    },
+    {
+      "id": "shell",
+      "label": "Shell",
+      "items": [
+        { "id": "bash",                "label": "General bash",                          "default": "deny"  },
+        { "id": "bash_git",            "label": "Git operations",                        "default": "allow" },
+        { "id": "bash_pkg",            "label": "Package managers (npm, pip, cargo…)",   "default": "allow" },
+        { "id": "bash_build",          "label": "Build & test commands",                 "default": "allow" },
+        { "id": "bash_process",        "label": "Process management (kill, ps…)",        "default": "deny"  },
+        { "id": "bash_fs_destructive", "label": "Destructive filesystem ops (rm, mv…)",  "default": "deny"  }
+      ]
+    },
+    {
+      "id": "network",
+      "label": "Network",
+      "items": [
+        { "id": "web_search", "label": "Web search",                 "default": "allow" },
+        { "id": "web_fetch",  "label": "Web fetch / HTTP requests",  "default": "allow" }
+      ]
+    },
+    {
+      "id": "project_management",
+      "label": "Project Management",
+      "items": [
+        { "id": "pm_read",   "label": "Read (tickets, projects, comments)",             "default": "allow" },
+        { "id": "pm_write",  "label": "Write (create/update tickets, add comments)",    "default": "allow" },
+        { "id": "pm_tokens", "label": "Token & escalation operations",                  "default": "deny"  }
+      ]
+    },
+    {
+      "id": "oracle",
+      "label": "Oracle",
+      "items": [
+        { "id": "oracle_ask", "label": "Ask oracle", "default": "allow" }
+      ]
+    }
+  ],
+  "mappings": {
+    "claude": {
+      "read":                { "tools": ["Read"] },
+      "write":               { "tools": ["Write"] },
+      "edit":                { "tools": ["Edit"] },
+      "glob":                { "tools": ["Glob"] },
+      "grep":                { "tools": ["Grep"] },
+      "bash":                { "tools": ["Bash"] },
+      "bash_git":            { "tools": ["Bash(git *)"] },
+      "bash_pkg":            { "tools": ["Bash(npm *)", "Bash(npx *)", "Bash(pnpm *)", "Bash(yarn *)", "Bash(pip *)", "Bash(pip3 *)", "Bash(cargo *)", "Bash(go *)", "Bash(bun *)"] },
+      "bash_build":          { "tools": ["Bash(make *)", "Bash(jest *)", "Bash(pytest *)", "Bash(vitest *)", "Bash(tsc *)", "Bash(node *)", "Bash(python *)", "Bash(python3 *)"] },
+      "bash_process":        { "tools": ["Bash(kill *)", "Bash(pkill *)", "Bash(ps *)", "Bash(lsof *)", "Bash(pgrep *)"] },
+      "bash_fs_destructive": { "tools": ["Bash(rm *)", "Bash(mv *)", "Bash(cp *)", "Bash(rmdir *)"] },
+      "web_search":          { "tools": ["WebSearch"] },
+      "web_fetch":           { "tools": ["WebFetch"] },
+      "pm_read":             { "tools": ["mcp__pm-local__list_tickets", "mcp__pm-local__get_ticket", "mcp__pm-local__list_projects", "mcp__pm-local__get_ticket_history", "mcp__pm-local__get_commits", "mcp__pm-local__list_sub_projects", "mcp__pm-local__get_next_ticket"] },
+      "pm_write":            { "tools": ["mcp__pm-local__create_ticket", "mcp__pm-local__update_ticket", "mcp__pm-local__add_comment", "mcp__pm-local__move_ticket", "mcp__pm-local__create_project", "mcp__pm-local__create_sub_project", "mcp__pm-local__set_blocks", "mcp__pm-local__remove_blocks", "mcp__pm-local__add_commit", "mcp__pm-local__update_project"] },
+      "pm_tokens":           { "tools": ["mcp__pm-local__issue_token", "mcp__pm-local__validate_token", "mcp__pm-local__revoke_token", "mcp__pm-local__list_tokens", "mcp__pm-local__grant_escalation", "mcp__pm-local__revoke_escalation", "mcp__pm-local__register_scope", "mcp__pm-local__heartbeat"] },
+      "oracle_ask":          { "tools": ["mcp__oracle-local__ask_oracle", "mcp__oracle-local__get_startup_context"] }
+    },
+    "codex": {
+      "read":                { "sandbox_access": "read" },
+      "write":               { "sandbox_access": "write" },
+      "edit":                { "sandbox_access": "write" },
+      "glob":                { "sandbox_access": "read" },
+      "grep":                { "sandbox_access": "read" },
+      "bash":                { "shell_cmds": ["*"] },
+      "bash_git":            { "shell_cmds": ["git"] },
+      "bash_pkg":            { "shell_cmds": ["npm", "npx", "pnpm", "yarn", "pip", "pip3", "cargo", "go", "bun"] },
+      "bash_build":          { "shell_cmds": ["make", "jest", "pytest", "vitest", "tsc", "node", "python", "python3"] },
+      "bash_process":        { "shell_cmds": ["kill", "pkill", "ps", "lsof", "pgrep"] },
+      "bash_fs_destructive": { "shell_cmds": ["rm", "mv", "cp", "rmdir"] },
+      "web_search":          { "network": true },
+      "web_fetch":           { "network": true },
+      "pm_read":             { "mcp_server": "pm-local", "tools": ["list_projects", "list_tickets", "get_ticket", "get_ticket_history", "get_commits", "list_sub_projects", "get_next_ticket"] },
+      "pm_write":            { "mcp_server": "pm-local", "tools": ["create_ticket", "update_ticket", "add_comment", "move_ticket", "create_project", "create_sub_project", "set_blocks", "remove_blocks", "add_commit", "update_project"] },
+      "pm_tokens":           { "mcp_server": "pm-local", "tools": ["issue_token", "validate_token", "revoke_token", "list_tokens", "grant_escalation", "revoke_escalation", "register_scope", "heartbeat"] },
+      "oracle_ask":          { "mcp_server": "oracle-local", "tools": ["ask_oracle", "get_startup_context"] }
+    },
+    "gemini": {
+      "read":                { "tools": ["ReadFileTool"] },
+      "write":               { "tools": ["WriteFileTool"] },
+      "edit":                { "tools": ["EditFileTool"] },
+      "glob":                { "tools": ["GlobTool"] },
+      "grep":                { "tools": ["GrepTool"] },
+      "bash":                { "tools": ["ShellTool"] },
+      "bash_git":            { "shell_cmds": ["git"] },
+      "bash_pkg":            { "shell_cmds": ["npm", "npx", "pnpm", "yarn", "pip", "pip3", "cargo", "go", "bun"] },
+      "bash_build":          { "shell_cmds": ["make", "jest", "pytest", "vitest", "tsc", "node", "python", "python3"] },
+      "bash_process":        { "shell_cmds": ["kill", "pkill", "ps", "lsof", "pgrep"] },
+      "bash_fs_destructive": { "shell_cmds": ["rm", "mv", "cp", "rmdir"] },
+      "web_search":          { "tools": ["WebSearchTool"] },
+      "web_fetch":           { "tools": ["WebFetchTool"] },
+      "pm_read":             { "mcp_server": "pm-local", "tools": ["list_projects", "list_tickets", "get_ticket", "get_ticket_history", "get_commits", "list_sub_projects", "get_next_ticket"] },
+      "pm_write":            { "mcp_server": "pm-local", "tools": ["create_ticket", "update_ticket", "add_comment", "move_ticket", "create_project", "create_sub_project", "set_blocks", "remove_blocks", "add_commit", "update_project"] },
+      "pm_tokens":           { "mcp_server": "pm-local", "tools": ["issue_token", "validate_token", "revoke_token", "list_tokens", "grant_escalation", "revoke_escalation", "register_scope", "heartbeat"] },
+      "oracle_ask":          { "mcp_server": "oracle-local", "tools": ["ask_oracle", "get_startup_context"] }
+    }
+  }
+}

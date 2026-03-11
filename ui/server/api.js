@@ -8,11 +8,14 @@ import { spawnSync, spawn } from 'child_process'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..', '..')
-const GLOBAL_TEMPLATES_DIR = join(REPO_ROOT, 'templates')
+const AGENT_PERMS_DEFAULTS_PATH = join(__dirname, 'config', 'agent-permissions.defaults.json')
+const GLOBAL_TEMPLATES_DIR   = join(REPO_ROOT, 'templates')
+const PERSONAS_TEMPLATES_DIR = join(REPO_ROOT, 'templates', 'personas')
 const DB_PATH = process.env.PM_DB_PATH ||
   join(__dirname, '..', '..', 'infra', 'ProjectManagement', 'data', 'pm.db')
 
 const db = new Database(DB_PATH)
+db.pragma('foreign_keys = ON')
 
 // Ensure config table exists and seed defaults
 db.exec(`CREATE TABLE IF NOT EXISTS scryer_config (key TEXT PRIMARY KEY, value TEXT)`)
@@ -25,6 +28,55 @@ db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('discord_to
 db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('discord_server_id', '')`).run()
 db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('oracle_provider', 'claude')`).run()
 db.prepare(`INSERT OR IGNORE INTO scryer_config (key, value) VALUES ('oracle_model', 'claude-haiku-4-5-20251001')`).run()
+
+// Agent permissions table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_permissions (
+    agent   TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    state   TEXT NOT NULL CHECK(state IN ('allow', 'deny')),
+    PRIMARY KEY (agent, item_id)
+  )
+`)
+
+// Seed agent_permissions from defaults.json (INSERT OR IGNORE — never overwrite user config)
+;(function seedAgentPermissions() {
+  try {
+    const defaults = JSON.parse(readFileSync(AGENT_PERMS_DEFAULTS_PATH, 'utf8'))
+    const agents   = ['claude', 'codex', 'gemini']
+    const insert   = db.prepare(`INSERT OR IGNORE INTO agent_permissions (agent, item_id, state) VALUES (?, ?, ?)`)
+    for (const section of defaults.sections) {
+      for (const item of section.items) {
+        for (const agent of agents) {
+          insert.run(agent, item.id, item.default)
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('seedAgentPermissions: could not seed from defaults.json:', e.message)
+  }
+})()
+
+// Seed default personas from templates/personas/ (INSERT OR IGNORE by name — never overwrite edits)
+;(function seedPersonas() {
+  try {
+    if (!existsSync(PERSONAS_TEMPLATES_DIR)) return
+    const files = readdirSync(PERSONAS_TEMPLATES_DIR).filter(f => f.endsWith('.md'))
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO personas (name, description, template_content, is_global, project_id, created_at) VALUES (?, ?, ?, 1, NULL, ?)`
+    )
+    for (const file of files) {
+      const content = readFileSync(join(PERSONAS_TEMPLATES_DIR, file), 'utf8')
+      // First line is `# Name`, second line is blank, third is description sentence
+      const lines = content.split('\n')
+      const name = lines[0].replace(/^#\s*/, '').trim()
+      const desc = lines.find((l, i) => i > 0 && l.trim()) || ''
+      insert.run(name, desc, content, new Date().toISOString())
+    }
+  } catch (e) {
+    console.warn('seedPersonas: could not seed default personas:', e.message)
+  }
+})()
 
 // Add agent preference columns if they don't exist yet
 ;['planning_agent', 'architect_agent'].forEach(col => {
@@ -81,31 +133,50 @@ function projectPathParts(projectId) {
   return parts
 }
 
-// Resolve the .planning/plan.md path for any entity (hierarchical structure), creating it if missing
+// Walk up to root project, return { rootCodePath, subParts }
+// rootCodePath = root project's code_path (the base path)
+// subParts     = non-default project names below root (for nested planning dirs)
+function resolveEntityBasePath(projectId) {
+  const subParts = []
+  let current = projectId
+  let rootCodePath = ''
+  while (current != null) {
+    const row = db.prepare(`SELECT name, parent_id, is_default, code_path FROM projects WHERE id = ?`).get(current)
+    if (!row) break
+    if (!row.is_default) {
+      if (row.parent_id == null) {
+        rootCodePath = row.code_path || ''
+      } else {
+        subParts.unshift(row.name)
+      }
+    }
+    current = row.parent_id
+  }
+  return { rootCodePath, subParts }
+}
+
+// Resolve the plan.md path for any entity — lives at {base_path}/.scryer/{sub_path}/plan.md
 function resolvePlanPath(type, id) {
-  const root = getScryerRoot()
   let entityDir
 
   if (type === 'project') {
-    const proj = db.prepare(`SELECT id FROM projects WHERE (id = ? OR name = ?) AND is_default = 0 AND parent_id IS NULL`).get(id, id)
+    const proj = db.prepare(`SELECT id, code_path FROM projects WHERE (id = ? OR name = ?) AND is_default = 0 AND parent_id IS NULL`).get(id, id)
     if (!proj) throw new Error('Project not found')
-    const parts = projectPathParts(proj.id)
-    entityDir = join(root, ...parts)
+    entityDir = join(expandPath(proj.code_path), '.scryer')
 
   } else if (type === 'subproject') {
     const sp = db.prepare(`SELECT id FROM projects WHERE id = ? AND is_default = 0`).get(id)
     if (!sp) throw new Error('Subproject not found')
-    const parts = projectPathParts(id)
-    entityDir = join(root, ...parts)
+    const { rootCodePath, subParts } = resolveEntityBasePath(id)
+    entityDir = join(expandPath(rootCodePath), '.scryer', ...subParts)
 
   } else if (type === 'ticket') {
     const ticket = db.prepare(`SELECT id, title, project_id FROM tickets WHERE id = ?`).get(id)
     if (!ticket) throw new Error('Ticket not found')
-    // project_id points to the default node — walk up to find the real container
     const defaultNode = db.prepare(`SELECT parent_id FROM projects WHERE id = ?`).get(ticket.project_id)
-    const parts = projectPathParts(defaultNode.parent_id)
+    const { rootCodePath, subParts } = resolveEntityBasePath(defaultNode.parent_id)
     const folderName = `T${id}-${slugify(ticket.title)}`
-    entityDir = join(root, ...parts, folderName)
+    entityDir = join(expandPath(rootCodePath), '.scryer', ...subParts, folderName)
 
   } else {
     throw new Error('Unknown entity type')
@@ -312,33 +383,29 @@ router.get('/planning-prompt', (req, res) => {
       name = proj.name
       description = proj.description || ''
       codePath = proj.code_path || '(not set)'
-      const parts = projectPathParts(numId)
-      planningFolder = join(getScryerRoot(), ...parts, '.planning')
+      planningFolder = join(expandPath(proj.code_path || ''), '.scryer')
 
     } else if (type === 'subproject') {
       const sp = db.prepare(
         `SELECT name, description FROM projects WHERE id = ? AND is_default = 0`
       ).get(numId)
       if (!sp) throw new Error('Sub-project not found')
-      const parts = projectPathParts(numId)
-      const parent = db.prepare(
-        `SELECT p.code_path FROM projects p WHERE p.id = ? AND p.is_default = 0`
-      ).get(db.prepare(`SELECT parent_id FROM projects WHERE id = ?`).get(numId)?.parent_id)
+      const { rootCodePath, subParts } = resolveEntityBasePath(numId)
       name = sp.name
       description = sp.description || ''
-      codePath = parent?.code_path || '(not set)'
-      planningFolder = join(getScryerRoot(), ...parts, '.planning')
+      codePath = rootCodePath || '(not set)'
+      planningFolder = join(expandPath(rootCodePath), '.scryer', ...subParts)
 
     } else if (type === 'ticket') {
       const ticket = db.prepare(`SELECT id, title, description, project_id FROM tickets WHERE id = ?`).get(numId)
       if (!ticket) throw new Error('Ticket not found')
       const defaultNode = db.prepare(`SELECT parent_id FROM projects WHERE id = ?`).get(ticket.project_id)
-      const parts = projectPathParts(defaultNode.parent_id)
+      const { rootCodePath, subParts } = resolveEntityBasePath(defaultNode.parent_id)
       const folderName = `T${numId}-${slugify(ticket.title)}`
       name = ticket.title
       description = ticket.description || ''
-      codePath = '(not set)'
-      planningFolder = join(getScryerRoot(), ...parts, folderName, '.planning')
+      codePath = rootCodePath || '(not set)'
+      planningFolder = join(expandPath(rootCodePath), '.scryer', ...subParts, folderName)
 
     } else {
       throw new Error('Unknown entity type')
@@ -476,15 +543,44 @@ router.delete('/projects/:name', (req, res) => {
 
   const deleteCode = req.body?.deleteCode === true
 
-  // Remove DB record (cascade deletes tickets, sub-projects, comments)
+  // Collect all project IDs in the subtree (root + all descendants)
+  const allProjectIds = [project.id]
+  const queue = [project.id]
+  while (queue.length) {
+    const pid = queue.shift()
+    const children = db.prepare(`SELECT id FROM projects WHERE parent_id = ?`).all(pid)
+    for (const c of children) { allProjectIds.push(c.id); queue.push(c.id) }
+  }
+  const subProjectIds = allProjectIds.filter(id => id !== project.id)
+
+  // Collect all ticket IDs in the subtree
+  const phAll = allProjectIds.map(() => '?').join(',')
+  const allTicketIds = db.prepare(`SELECT id FROM tickets WHERE project_id IN (${phAll})`).all(...allProjectIds).map(r => r.id)
+
+  // Delete proposals (and their items, which cascade) for every entity in this tree
+  db.prepare(`DELETE FROM proposals WHERE entity_type = 'project' AND entity_id = ?`).run(project.name)
+  if (subProjectIds.length) {
+    const ph = subProjectIds.map(() => '?').join(',')
+    db.prepare(`DELETE FROM proposals WHERE entity_type = 'subproject' AND entity_id IN (${ph})`).run(...subProjectIds.map(String))
+  }
+  if (allTicketIds.length) {
+    const ph = allTicketIds.map(() => '?').join(',')
+    db.prepare(`DELETE FROM proposals WHERE entity_type = 'ticket' AND entity_id IN (${ph})`).run(...allTicketIds.map(String))
+    // Also null any proposal_items referencing these tickets directly (pre-migration safety)
+    db.prepare(`UPDATE proposal_items SET ticket_id = NULL WHERE ticket_id IN (${ph})`).run(...allTicketIds)
+  }
+
+  // Remove DB record — foreign_keys ON cascades to sub-projects, tickets, comments, etc.
   db.prepare(`DELETE FROM projects WHERE id = ?`).run(project.id)
 
-  // Always delete the planning folder
-  const planningFolder = join(expandPath(getScryerRoot()), project.name)
-  try {
-    if (existsSync(planningFolder)) rmSync(planningFolder, { recursive: true, force: true })
-  } catch (e) {
-    console.error('Failed to delete planning folder:', planningFolder, e.message)
+  // Always delete the .scryer planning folder (lives inside the project's base_path)
+  if (project.code_path) {
+    const planningFolder = join(expandPath(project.code_path), '.scryer')
+    try {
+      if (existsSync(planningFolder)) rmSync(planningFolder, { recursive: true, force: true })
+    } catch (e) {
+      console.error('Failed to delete .scryer folder:', planningFolder, e.message)
+    }
   }
 
   // Delete code folder only if requested AND it's confirmed to be inside code_root
@@ -1313,6 +1409,266 @@ router.post('/clone-codebase', (req, res) => {
   }
 
   res.json({ ok: true, path: expandedDest })
+})
+
+// ── Agent permissions ──────────────────────────────────────────────────────────
+
+// GET /api/agent-permissions — returns sections + current state per agent
+router.get('/agent-permissions', (_req, res) => {
+  try {
+    const defaults = JSON.parse(readFileSync(AGENT_PERMS_DEFAULTS_PATH, 'utf8'))
+    const agents   = ['claude', 'codex', 'gemini']
+    const permissions = {}
+    for (const agent of agents) {
+      const rows = db.prepare(`SELECT item_id, state FROM agent_permissions WHERE agent = ?`).all(agent)
+      permissions[agent] = Object.fromEntries(rows.map(r => [r.item_id, r.state]))
+    }
+    res.json({ sections: defaults.sections, permissions })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// PATCH /api/agent-permissions — update a single item's state
+router.patch('/agent-permissions', (req, res) => {
+  const { agent, item_id, state } = req.body
+  if (!agent || !item_id || !state) return res.status(400).json({ error: 'agent, item_id, state required' })
+  if (!['allow', 'deny'].includes(state)) return res.status(400).json({ error: 'state must be allow or deny' })
+  try {
+    db.prepare(`INSERT OR REPLACE INTO agent_permissions (agent, item_id, state) VALUES (?, ?, ?)`).run(agent, item_id, state)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /api/agent-permissions/reset — reset all to factory defaults
+router.post('/agent-permissions/reset', (_req, res) => {
+  try {
+    const defaults = JSON.parse(readFileSync(AGENT_PERMS_DEFAULTS_PATH, 'utf8'))
+    const agents   = ['claude', 'codex', 'gemini']
+    const insert   = db.prepare(`INSERT OR REPLACE INTO agent_permissions (agent, item_id, state) VALUES (?, ?, ?)`)
+    for (const section of defaults.sections) {
+      for (const item of section.items) {
+        for (const agent of agents) {
+          insert.run(agent, item.id, item.default)
+        }
+      }
+    }
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── Council ─────────────────────────────────────────────────────────────────────
+
+// GET /api/projects/:name/debates — all debates for entities within this project
+router.get('/projects/:name/debates', (req, res) => {
+  const project = db.prepare(
+    `SELECT id, name FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`
+  ).get(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  try {
+    // All SP ids under this project
+    const spIds = db.prepare(
+      `SELECT id FROM projects WHERE parent_id = ? AND is_default = 0`
+    ).all(project.id).map(r => r.id)
+
+    // All ticket ids under this project (through default nodes)
+    const defaultNodes = db.prepare(
+      `SELECT id FROM projects WHERE (parent_id = ? OR parent_id IN (${spIds.map(() => '?').join(',')})) AND is_default = 1`
+    ).all(project.id, ...spIds)
+    const defaultIds = defaultNodes.map(r => r.id)
+    const ticketIds = defaultIds.length
+      ? db.prepare(`SELECT id FROM tickets WHERE project_id IN (${defaultIds.map(() => '?').join(',')})`).all(...defaultIds).map(r => r.id)
+      : []
+
+    const debates = []
+
+    // Project-level debate
+    const projDebate = db.prepare(
+      `SELECT * FROM council_debates WHERE entity_type = 'project' AND entity_id = ?`
+    ).get(project.name)
+    if (projDebate) debates.push(dict_debate(projDebate))
+
+    // SP debates
+    for (const spId of spIds) {
+      const d = db.prepare(
+        `SELECT * FROM council_debates WHERE entity_type = 'subproject' AND entity_id = ?`
+      ).get(String(spId))
+      if (d) debates.push(dict_debate(d))
+    }
+
+    // Ticket debates
+    for (const tId of ticketIds) {
+      const d = db.prepare(
+        `SELECT * FROM council_debates WHERE entity_type = 'ticket' AND entity_id = ?`
+      ).get(String(tId))
+      if (d) debates.push(dict_debate(d))
+    }
+
+    res.json({ debates })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+function dict_debate(row) {
+  return {
+    id:          row.id,
+    entity_type: row.entity_type,
+    entity_id:   row.entity_id,
+    state:       row.state,
+    round:       row.round,
+    created_at:  row.created_at,
+    updated_at:  row.updated_at,
+  }
+}
+
+// GET /api/debates?entity_type=X&entity_id=Y — find a debate by entity
+router.get('/debates', (req, res) => {
+  const { entity_type, entity_id } = req.query
+  if (!entity_type || !entity_id) return res.status(400).json({ error: 'entity_type and entity_id required' })
+  const row = db.prepare(
+    `SELECT * FROM council_debates WHERE entity_type = ? AND entity_id = ?`
+  ).get(entity_type, entity_id)
+  if (!row) return res.json({ debate: null })
+  res.json({ debate: dict_debate(row) })
+})
+
+// GET /api/debates/:id — full debate with members, comments, and actions
+router.get('/debates/:id', (req, res) => {
+  const id = parseInt(req.params.id)
+  const debate = db.prepare(`SELECT * FROM council_debates WHERE id = ?`).get(id)
+  if (!debate) return res.status(404).json({ error: 'Debate not found' })
+
+  const members = db.prepare(
+    `SELECT cm.*, p.name AS persona_name FROM council_members cm JOIN personas p ON p.id = cm.persona_id WHERE cm.debate_id = ? ORDER BY cm.seat_order`
+  ).all(id)
+
+  const comments = db.prepare(
+    `SELECT cc.*, p.name AS persona_name
+     FROM council_comments cc
+     LEFT JOIN council_members cm ON cm.id = cc.member_id
+     LEFT JOIN personas p ON p.id = cm.persona_id
+     WHERE cc.debate_id = ? AND cc.author != 'human_pending'
+     ORDER BY cc.created_at`
+  ).all(id)
+
+  const actions = db.prepare(
+    `SELECT ca.*, p.name AS persona_name
+     FROM council_actions ca
+     LEFT JOIN council_members cm ON cm.id = ca.member_id
+     LEFT JOIN personas p ON p.id = cm.persona_id
+     WHERE ca.debate_id = ? ORDER BY ca.created_at`
+  ).all(id)
+
+  res.json({ debate, members, comments, actions })
+})
+
+// POST /api/council/launch — launch a council session for an entity
+router.post('/council/launch', (req, res) => {
+  const { entity_type, entity_id, warmup = 15 } = req.body
+  if (!entity_type || !entity_id) {
+    return res.status(400).json({ error: 'entity_type and entity_id required' })
+  }
+  const scryer_root = db.prepare(`SELECT value FROM scryer_config WHERE key = 'scryer_root'`).get()?.value
+  if (!scryer_root) {
+    return res.status(400).json({ error: 'scryer_root not configured. Set it in Global Config.' })
+  }
+  const launcher = join(__dirname, '..', '..', 'council', 'launch.py')
+  const result = spawnSync('python3', [
+    launcher,
+    '--type', entity_type,
+    '--id', String(entity_id),
+    '--warmup', String(warmup),
+    '--no-attach',
+  ], { encoding: 'utf8', timeout: 30000 })
+  if (result.status !== 0) {
+    return res.status(500).json({ error: result.stderr?.trim() || 'Council launch failed' })
+  }
+  res.json({ ok: true })
+})
+
+// ── Personas ────────────────────────────────────────────────────────────────────
+
+// GET /api/personas — list all global personas (+ project-specific if project_id given)
+router.get('/personas', (req, res) => {
+  const projectId = req.query.project_id ? parseInt(req.query.project_id) : null
+  try {
+    let rows
+    if (projectId) {
+      rows = db.prepare(`SELECT * FROM personas WHERE is_global = 1 OR project_id = ? ORDER BY name`).all(projectId)
+    } else {
+      rows = db.prepare(`SELECT * FROM personas WHERE is_global = 1 ORDER BY name`).all()
+    }
+    res.json({ personas: rows })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// GET /api/personas/:id — full persona detail
+router.get('/personas/:id', (req, res) => {
+  const id = parseInt(req.params.id)
+  const row = db.prepare(`SELECT * FROM personas WHERE id = ?`).get(id)
+  if (!row) return res.status(404).json({ error: 'Persona not found' })
+  res.json({ persona: row })
+})
+
+// POST /api/personas — create a new persona
+router.post('/personas', (req, res) => {
+  const { name, description = '', template_content = '', is_global = true, project_id = null } = req.body
+  if (!name?.trim()) return res.status(400).json({ error: 'name required' })
+  try {
+    const result = db.prepare(
+      `INSERT INTO personas (name, description, template_content, is_global, project_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(name.trim(), description.trim(), template_content, is_global ? 1 : 0, project_id, new Date().toISOString())
+    const row = db.prepare(`SELECT * FROM personas WHERE id = ?`).get(result.lastInsertRowid)
+    res.status(201).json({ persona: row })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// PATCH /api/personas/:id — update name, description, or template_content
+router.patch('/personas/:id', (req, res) => {
+  const id = parseInt(req.params.id)
+  const row = db.prepare(`SELECT * FROM personas WHERE id = ?`).get(id)
+  if (!row) return res.status(404).json({ error: 'Persona not found' })
+  const { name, description, template_content } = req.body
+  db.prepare(
+    `UPDATE personas SET name = ?, description = ?, template_content = ? WHERE id = ?`
+  ).run(
+    name ?? row.name,
+    description ?? row.description,
+    template_content ?? row.template_content,
+    id
+  )
+  res.json({ persona: db.prepare(`SELECT * FROM personas WHERE id = ?`).get(id) })
+})
+
+// DELETE /api/personas/:id — delete a persona
+router.delete('/personas/:id', (req, res) => {
+  const id = parseInt(req.params.id)
+  db.prepare(`DELETE FROM personas WHERE id = ?`).run(id)
+  res.json({ ok: true })
+})
+
+// POST /api/personas/:id/reset — revert template_content to global template file (by matching name)
+router.post('/personas/:id/reset', (req, res) => {
+  const id = parseInt(req.params.id)
+  const row = db.prepare(`SELECT * FROM personas WHERE id = ?`).get(id)
+  if (!row) return res.status(404).json({ error: 'Persona not found' })
+  // Derive filename from persona name (lowercase, spaces→hyphens)
+  const filename = row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/, '') + '.md'
+  const templatePath = join(PERSONAS_TEMPLATES_DIR, filename)
+  if (!existsSync(templatePath)) return res.status(404).json({ error: 'No default template found for this persona' })
+  const content = readFileSync(templatePath, 'utf8')
+  db.prepare(`UPDATE personas SET template_content = ? WHERE id = ?`).run(content, id)
+  res.json({ persona: db.prepare(`SELECT * FROM personas WHERE id = ?`).get(id) })
 })
 
 export default router

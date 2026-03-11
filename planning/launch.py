@@ -28,6 +28,8 @@ sys.path.insert(0, str(ORACLE_PATH))
 
 import db as pm_db
 import oracle as oracle_mod
+sys.path.insert(0, str(REPO_ROOT / "infra"))
+import agent_config as agentcfg
 
 pm_db.init_db()
 
@@ -62,8 +64,21 @@ def _trust_gemini_dirs(*directories: str) -> None:
 
 # ── Entity resolution ─────────────────────────────────────────────────────────
 
+def _root_code_path(root_name: str) -> str:
+    """Return code_path for the root project named root_name."""
+    import sqlite3
+    conn = sqlite3.connect(str(PM_PATH / "data" / "pm.db"))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT code_path FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL",
+        (root_name,)
+    ).fetchone()
+    conn.close()
+    return row["code_path"] if row else ""
+
+
 def resolve_entity(entity_type: str, entity_id: str) -> dict:
-    """Return name, description, location path for the entity."""
+    """Return name, description, location path, and code_path for the entity."""
     if entity_type == "project":
         p = pm_db.get_project(entity_id)
         if not p:
@@ -75,6 +90,7 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             "name":        p["name"],
             "description": p.get("description", ""),
             "location":    p["name"],
+            "code_path":   p.get("code_path", ""),
         }
     elif entity_type == "subproject":
         pid = int(entity_id)
@@ -101,6 +117,7 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             parent_id = par["parent_id"]
         conn2.close()
         parts.append(p["name"])
+        root_name = parts[0]
         return {
             "type":        "subproject",
             "id":          entity_id,
@@ -108,6 +125,7 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             "name":        p["name"],
             "description": p["description"],
             "location":    " > ".join(parts),
+            "code_path":   _root_code_path(root_name),
         }
     elif entity_type == "ticket":
         tid = int(entity_id)
@@ -116,6 +134,7 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             raise ValueError(f"Ticket {tid} not found")
         slug = t["title"].lower().replace(" ", "-")[:40]
         slug = "".join(c for c in slug if c.isalnum() or c == "-")
+        root_name = t["location"].split(">")[0].strip()
         return {
             "type":        "ticket",
             "id":          entity_id,
@@ -124,6 +143,7 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             "description": t.get("description", ""),
             "location":    t["location"],
             "slug":        slug,
+            "code_path":   _root_code_path(root_name),
         }
     else:
         raise ValueError(f"Unknown entity type: {entity_type!r}")
@@ -132,16 +152,17 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
 # ── Plan path ─────────────────────────────────────────────────────────────────
 
 def plan_path(entity: dict, scryer_root: str) -> Path:
-    """Resolve the plan.md path for an entity."""
-    root = Path(scryer_root).expanduser()
-    location = entity["location"]  # e.g. "Scryer > UI"
+    """Resolve the plan.md path — lives at {base_path}/.scryer/{sub_parts}/plan.md."""
+    base = Path(entity.get("code_path", "")).expanduser()
+    location = entity["location"]
     parts = [p.strip() for p in location.split(">")]
+    sub_parts = parts[1:]  # strip root project name — it's encoded in base_path
 
     if entity["type"] == "ticket":
         slug = entity.get("slug", f"T{entity['numeric_id']}")
-        parts.append(f"T{entity['numeric_id']}-{slug}")
+        sub_parts.append(f"T{entity['numeric_id']}-{slug}")
 
-    return root.joinpath(*parts) / "plan.md"
+    return (base / ".scryer").joinpath(*sub_parts) / "plan.md" if sub_parts else base / ".scryer" / "plan.md"
 
 
 # ── Ancestor context ──────────────────────────────────────────────────────────
@@ -258,6 +279,12 @@ def launch(entity_type: str, entity_id: str, agent: str = "claude", warmup: int 
         _trust_codex_dir(work_dir)
     if agent == "gemini":
         _trust_gemini_dirs(work_dir, str(Path(scryer_root).expanduser()))
+
+    # Write agent permission config files into code_path
+    code_path = entity.get("code_path", "")
+    if code_path:
+        print(f"Writing agent permission config for {agent}…")
+        agentcfg.write_agent_configs(agent, code_path, str(PM_PATH / "data" / "pm.db"))
 
     # Kill existing session if present
     subprocess.run([TMUX, "kill-session", "-t", session], capture_output=True)

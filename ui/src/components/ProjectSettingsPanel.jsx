@@ -162,7 +162,7 @@ export default function ProjectSettingsPanel({ project, onClose, onSave, onDelet
 
       <label>Name<input value={form.name} onChange={set('name')} /></label>
       <label>Description<input value={form.description} onChange={set('description')} /></label>
-      <label>Code path<input value={form.code_path} onChange={set('code_path')} placeholder="/path/to/repo or URL" /></label>
+      <label>Base path<input value={form.code_path} onChange={set('code_path')} placeholder="/path/to/repo" /></label>
       <label>Git backend
         <select value={form.git_backend} onChange={set('git_backend')}>
           {GIT_BACKENDS.map(b => <option key={b} value={b}>{GIT_LABELS[b]}</option>)}
@@ -254,6 +254,10 @@ export default function ProjectSettingsPanel({ project, onClose, onSave, onDelet
         <button className="btn-cancel" onClick={onClose}>Cancel</button>
         <button className="btn-save" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
       </div>
+
+      <button className="btn-analyse" onClick={() => { onClose(); window.location.href = `/projects/${project.name}?firstRun=architect` }}>
+        Analyse Existing Code
+      </button>
 
       <div className="settings-delete-zone">
         {!confirmDelete ? (

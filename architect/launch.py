@@ -26,6 +26,8 @@ sys.path.insert(0, str(ORACLE_PATH))
 
 import db as pm_db
 import oracle as oracle_mod
+sys.path.insert(0, str(REPO_ROOT / "infra"))
+import agent_config as agentcfg
 
 pm_db.init_db()
 
@@ -78,6 +80,7 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             "numeric_id": p["id"], "name": p["name"],
             "description": p["description"] or "",
             "location": p["name"],
+            "code_path": p["code_path"] or "",
         }
 
     elif entity_type == "subproject":
@@ -87,14 +90,17 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             raise ValueError(f"Sub-project {pid} not found")
         parts = []
         parent_id = p["parent_id"]
+        root_code_path = ""
         while parent_id:
             par = conn.execute(
-                "SELECT id, name, parent_id, is_default FROM projects WHERE id = ?", (parent_id,)
+                "SELECT id, name, parent_id, is_default, code_path FROM projects WHERE id = ?", (parent_id,)
             ).fetchone()
             if not par:
                 break
             if not par["is_default"]:
                 parts.insert(0, par["name"])
+                if par["parent_id"] is None:
+                    root_code_path = par["code_path"] or ""
             parent_id = par["parent_id"]
         parts.append(p["name"])
         conn.close()
@@ -103,6 +109,7 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             "numeric_id": pid, "name": p["name"],
             "description": p["description"] or "",
             "location": " > ".join(parts),
+            "code_path": root_code_path,
         }
 
     elif entity_type == "ticket":
@@ -112,15 +119,18 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             raise ValueError(f"Ticket {tid} not found")
         slug = re.sub(r"[^a-z0-9-]", "", t["title"].lower().replace(" ", "-"))[:40]
         parts = []
+        root_code_path = ""
         pid = t["project_id"]
         while pid:
             par = conn.execute(
-                "SELECT name, parent_id, is_default FROM projects WHERE id = ?", (pid,)
+                "SELECT name, parent_id, is_default, code_path FROM projects WHERE id = ?", (pid,)
             ).fetchone()
             if not par:
                 break
             if not par["is_default"]:
                 parts.insert(0, par["name"])
+                if par["parent_id"] is None:
+                    root_code_path = par["code_path"] or ""
             pid = par["parent_id"]
         conn.close()
         return {
@@ -128,6 +138,7 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
             "numeric_id": tid, "name": t["title"],
             "description": t["description"] or "",
             "location": " > ".join(parts), "slug": slug,
+            "code_path": root_code_path,
         }
 
     else:
@@ -135,12 +146,14 @@ def resolve_entity(entity_type: str, entity_id: str) -> dict:
 
 
 def _plan_path(entity: dict, scryer_root: str) -> Path:
-    root = Path(scryer_root).expanduser()
+    base = Path(entity.get("code_path", "")).expanduser()
     parts = [p.strip() for p in entity["location"].split(">")]
+    sub_parts = parts[1:]  # root project name is encoded in base_path
     if entity["type"] == "ticket":
         slug = entity.get("slug", f"T{entity['numeric_id']}")
-        parts.append(f"T{entity['numeric_id']}-{slug}")
-    return root.joinpath(*parts) / "plan.md"
+        sub_parts.append(f"T{entity['numeric_id']}-{slug}")
+    scryer_dir = base / ".scryer"
+    return scryer_dir.joinpath(*sub_parts) / "plan.md" if sub_parts else scryer_dir / "plan.md"
 
 
 def _root_project_name(entity: dict) -> str:
@@ -379,6 +392,12 @@ def launch(entity_type: str, entity_id: str, mode: str = "architect",
         _trust_codex_dir(work_dir)
     if agent == "gemini":
         _trust_gemini_dirs(work_dir, str(Path(scryer_root).expanduser()))
+
+    # Write agent permission config files into code_path
+    code_path = entity.get("code_path", "")
+    if code_path:
+        print(f"Writing agent permission config for {agent}…")
+        agentcfg.write_agent_configs(agent, code_path, str(PM_PATH / "data" / "pm.db"))
 
     subprocess.run([TMUX, "kill-session", "-t", session], capture_output=True)
     subprocess.run([

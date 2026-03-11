@@ -113,7 +113,7 @@ Every stage is the same shape: specialised agent, tmux session, output artifact,
 Plan → Architect → Execute → Secure → Deploy
 ```
 
-**Council Review** is orthogonal to the pipeline — invoke it at any stage on any artifact.
+**Agent Council** is orthogonal to the pipeline — invoke it at any stage on any artifact.
 
 ### Stages built
 | Stage | Launcher | Artifact |
@@ -127,7 +127,7 @@ Plan → Architect → Execute → Secure → Deploy
 - **Deploy** — deployment plan + execution agent
 - **Ops** — operations agent (ticket TBD)
 
-### Council Review
+### Agent Council
 Multi-agent review, invokable at any stage on any artifact. User defines reviewer personalities (configurable library). Agents debate via PM ticket comments (token-passing daisy chain), converge, produce actionable suggestions + open questions. **Needs extensive design before building.**
 
 ### Orchestrator

@@ -120,6 +120,7 @@ export default function ProjectView() {
   const navigate        = useNavigate()
   const [searchParams]  = useSearchParams()
   const [project, setProject] = useState(null)
+  const [debates, setDebates] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
   const [filter, setFilter]           = useState('')
@@ -341,20 +342,35 @@ export default function ProjectView() {
         .catch(() => setError('Could not load project.'))
         .finally(() => setLoading(false))
     }
+    function fetchDebates() {
+      fetch(`/api/projects/${name}/debates`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.debates) setDebates(d.debates) })
+        .catch(() => {})
+    }
     fetchProject()
-    const interval = setInterval(fetchProject, 5000)
+    fetchDebates()
+    const interval = setInterval(() => { fetchProject(); fetchDebates() }, 5000)
     return () => clearInterval(interval)
   }, [name])
 
-  // Auto-launch planning session on first visit (from new project form)
+  // Auto-action on first visit (from new project form)
+  const [autoOpenEditor, setAutoOpenEditor] = useState(false)
   useEffect(() => {
     if (!project) return
-    const firstRun = searchParams.get('firstRun') === '1'
+    const firstRun = searchParams.get('firstRun')
     if (!firstRun) return
     const agent = searchParams.get('agent') || 'claude'
-    // Clear query params so a refresh doesn't re-launch
+    const entity = { type: 'root', entityId: project.id, label: project.name }
+    // Clear query params so a refresh doesn't re-trigger
     navigate(`/projects/${name}`, { replace: true })
-    handleLaunch('plan', agent, { type: 'root', entityId: project.id, label: project.name })
+    if (firstRun === '1' || firstRun === 'plan') {
+      handleLaunch('plan', agent, entity)
+    } else if (firstRun === 'editor') {
+      setAutoOpenEditor(true)
+    } else if (firstRun === 'architect') {
+      handleLaunch('architect', agent, entity)
+    }
   }, [project]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return <div className="state-msg">Loading…</div>
@@ -434,7 +450,7 @@ export default function ProjectView() {
         )}
         {mapVersion === 'v1'
           ? <MindMap project={project} onLaunch={handleLaunch} onSettings={() => setSettingsOpen(true)} filter={filter} />
-          : <MindMapV2 project={project} onLaunch={handleLaunch} onSettings={() => setSettingsOpen(true)} filter={filter} />
+          : <MindMapV2 project={project} onLaunch={handleLaunch} onSettings={() => setSettingsOpen(true)} filter={filter} autoOpenEditor={autoOpenEditor} onAutoOpenEditorDone={() => setAutoOpenEditor(false)} debates={debates} />
         }
         {logOpen && <ActivityDialog project={project} onClose={() => setLogOpen(false)} />}
         {reviewOpen && <ReviewDialog project={project} onClose={() => setReviewOpen(false)} />}

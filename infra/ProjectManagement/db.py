@@ -120,6 +120,71 @@ def _create_schema(conn) -> None:
             tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
             PRIMARY KEY (ticket_id, tag_id)
         );
+
+        -- ── Agent Council ────────────────────────────────────────────────────
+
+        CREATE TABLE IF NOT EXISTS personas (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            name             TEXT NOT NULL,
+            description      TEXT NOT NULL DEFAULT '',
+            template_content TEXT NOT NULL DEFAULT '',
+            is_global        INTEGER NOT NULL DEFAULT 1,
+            project_id       INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+            created_at       TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS council_debates (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            entity_id   TEXT NOT NULL,
+            state       TEXT NOT NULL DEFAULT 'active',
+            round       INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            UNIQUE(entity_type, entity_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS council_members (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
+            persona_id INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+            seat_order INTEGER NOT NULL DEFAULT 0,
+            provider   TEXT NOT NULL DEFAULT 'claude',
+            model      TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+            state      TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS council_comments (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
+            member_id  INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
+            author     TEXT NOT NULL DEFAULT 'human',
+            round      INTEGER NOT NULL DEFAULT 1,
+            content    TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS council_actions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            debate_id     INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
+            member_id     INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
+            action_type   TEXT NOT NULL,
+            ticket_id     INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+            content       TEXT NOT NULL DEFAULT '',
+            conflicts_with INTEGER REFERENCES council_actions(id) ON DELETE SET NULL,
+            status        TEXT NOT NULL DEFAULT 'pending',
+            created_at    TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS council_turns (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
+            member_id  INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
+            round      INTEGER NOT NULL,
+            did_comment INTEGER NOT NULL DEFAULT 0,
+            completed_at TEXT
+        );
     """)
 
 
@@ -383,17 +448,102 @@ def init_db() -> None:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS proposal_items (
                 id              TEXT PRIMARY KEY,
-                proposal_id     TEXT NOT NULL REFERENCES proposals(id),
+                proposal_id     TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
                 kind            TEXT NOT NULL,
                 entity_type     TEXT NOT NULL,
                 entity_id       TEXT NOT NULL,
-                ticket_id       INTEGER REFERENCES tickets(id),
+                ticket_id       INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
                 status          TEXT NOT NULL DEFAULT 'pending',
                 rejection_reason TEXT,
                 created_at      TEXT NOT NULL,
                 resolved_at     TEXT
             )
         """)
+
+        # Agent Council tables (idempotent — safe for existing DBs)
+        for ddl in [
+            """CREATE TABLE IF NOT EXISTS personas (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                name             TEXT NOT NULL,
+                description      TEXT NOT NULL DEFAULT '',
+                template_content TEXT NOT NULL DEFAULT '',
+                is_global        INTEGER NOT NULL DEFAULT 1,
+                project_id       INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                created_at       TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS council_debates (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id   TEXT NOT NULL,
+                state       TEXT NOT NULL DEFAULT 'active',
+                round       INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(entity_type, entity_id)
+            )""",
+            """CREATE TABLE IF NOT EXISTS council_members (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
+                persona_id INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                seat_order INTEGER NOT NULL DEFAULT 0,
+                provider   TEXT NOT NULL DEFAULT 'claude',
+                model      TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+                state      TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS council_comments (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
+                member_id  INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
+                author     TEXT NOT NULL DEFAULT 'human',
+                round      INTEGER NOT NULL DEFAULT 1,
+                content    TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS council_actions (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                debate_id      INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
+                member_id      INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
+                action_type    TEXT NOT NULL,
+                ticket_id      INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+                content        TEXT NOT NULL DEFAULT '',
+                conflicts_with INTEGER REFERENCES council_actions(id) ON DELETE SET NULL,
+                status         TEXT NOT NULL DEFAULT 'pending',
+                created_at     TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS council_turns (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                debate_id    INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
+                member_id    INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
+                round        INTEGER NOT NULL,
+                did_comment  INTEGER NOT NULL DEFAULT 0,
+                completed_at TEXT
+            )""",
+        ]:
+            conn.execute(ddl)
+
+        # Migrate proposal_items if it exists without ON DELETE CASCADE / SET NULL
+        pi_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='proposal_items'"
+        ).fetchone()
+        if pi_sql and 'ON DELETE CASCADE' not in pi_sql[0]:
+            conn.executescript("""
+                ALTER TABLE proposal_items RENAME TO _v_proposal_items;
+                CREATE TABLE proposal_items (
+                    id              TEXT PRIMARY KEY,
+                    proposal_id     TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
+                    kind            TEXT NOT NULL,
+                    entity_type     TEXT NOT NULL,
+                    entity_id       TEXT NOT NULL,
+                    ticket_id       INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+                    status          TEXT NOT NULL DEFAULT 'pending',
+                    rejection_reason TEXT,
+                    created_at      TEXT NOT NULL,
+                    resolved_at     TEXT
+                );
+                INSERT INTO proposal_items SELECT * FROM _v_proposal_items;
+                DROP TABLE _v_proposal_items;
+            """)
 
 
 # ---------------------------------------------------------------------------
