@@ -266,9 +266,10 @@ def update_ticket(
 
 
 @mcp.tool()
-def add_comment(ticket_id: int, content: str, session_id: str | None = None) -> str:
+def add_comment(ticket_id: int, content: str, author: str = "human", session_id: str | None = None) -> str:
     """
     Add a comment to a ticket's thread.
+    author: display name of the commenter (e.g. 'human', 'Security Auditor').
     session_id: planning session ID — enables scope enforcement if a scope is registered.
     """
     # Scope check
@@ -290,7 +291,7 @@ def add_comment(ticket_id: int, content: str, session_id: str | None = None) -> 
                     "session_id": session_id,
                 })
     try:
-        comment = db.add_comment(ticket_id, content, actor="agent")
+        comment = db.add_comment(ticket_id, content, actor="agent", author=author)
         return json.dumps({"status": "created", "comment": comment})
     except ValueError as e:
         return json.dumps({"status": "error", "message": str(e)})

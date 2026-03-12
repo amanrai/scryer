@@ -15,6 +15,10 @@
   --yellow:     #e5c07b;
   --red:        #e06c75;
   --purple:     #c678dd;
+  /* aliases */
+  --accent:     #61afef;
+  --surface2:   #2e333b;
+  --surface3:   #282c34;
 }
 
 [data-theme="light"] {
@@ -33,6 +37,10 @@
   --yellow:     #c18401;
   --red:        #e45649;
   --purple:     #a626a4;
+  /* aliases */
+  --accent:     #4078c0;
+  --surface2:   #efefef;
+  --surface3:   #f5f5f5;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1902,6 +1910,36 @@ body {
 .mm-modal-close:hover { color: var(--text); }
 .mm-modal-delete:hover { color: var(--red); }
 
+.mm-modal-minimize {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.mm-modal-minimize:hover { color: var(--text); background: var(--bg-hover); }
+
+.council-minimized-chip {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  z-index: 900;
+  cursor: default;
+}
+.council-minimized-icon { font-size: 0.9rem; color: var(--blue); }
+.council-minimized-label { font-size: 0.82rem; color: var(--text); font-weight: 500; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 .mm-modal-desc {
   font-size: 0.85rem;
   color: var(--text);
@@ -3407,6 +3445,12 @@ body {
 
 .v2n-ticket--closed { opacity: 0.45; }
 
+.v2n-ticket--council {
+  border-color: #b8972a;
+  background: color-mix(in srgb, #c9a227 8%, var(--bg-panel));
+}
+.v2n-ticket--council:hover { border-color: #c9a227; }
+
 .v2n-ticket--selected {
   border-color: var(--blue);
   background: color-mix(in srgb, var(--blue) 12%, var(--bg-panel));
@@ -3703,3 +3747,440 @@ body {
 .council-action-status { margin-left: auto; color: var(--text-muted); }
 .council-action-author { color: var(--text-muted); }
 .council-action-content { font-size: 0.83rem; color: var(--text); }
+
+.council-action-conflict {
+  font-size: 0.72rem;
+  color: var(--yellow, #e5c07b);
+  font-weight: 600;
+}
+.council-action-review {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.btn-accept {
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--green) 50%, transparent);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+  color: var(--green);
+}
+.btn-accept:hover { background: color-mix(in srgb, var(--green) 22%, transparent); }
+.btn-reject {
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  color: var(--red);
+}
+.btn-reject:hover { background: color-mix(in srgb, var(--red) 20%, transparent); }
+
+.council-end-btn {
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
+  background: transparent;
+  color: var(--red);
+  margin-right: auto;
+}
+.council-end-btn:hover { background: color-mix(in srgb, var(--red) 10%, transparent); }
+
+.council-live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green, #98c379);
+  animation: council-pulse 1.8s ease-in-out infinite;
+  margin-left: 2px;
+}
+@keyframes council-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.council-member-provider {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface3, #2c313c);
+  font-size: 0.6rem;
+  font-weight: 700;
+  margin-left: 4px;
+  color: var(--text-muted);
+}
+
+/* ── Council launch dialog (T130) ─────────────────────────────────────────── */
+
+.council-launch-dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(640px, 90vw);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+}
+.council-launch-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.council-launch-icon { font-size: 22px; }
+.council-launch-header > div { flex: 1; }
+.council-launch-title { font-size: 1rem; font-weight: 700; color: var(--text); margin: 0 0 2px; }
+.council-launch-sub { font-size: 0.8rem; color: var(--text-muted); margin: 0; }
+.council-launch-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.council-launch-desc { font-size: 0.82rem; color: var(--text-muted); margin: 0; line-height: 1.5; }
+.council-launch-error { font-size: 0.82rem; color: var(--red); margin: 0; }
+.council-launch-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.council-seat-count { font-size: 0.8rem; color: var(--text-muted); margin-right: auto; }
+
+.council-seat-list { display: flex; flex-direction: column; gap: 8px; }
+
+.council-seat {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px 12px;
+  transition: opacity 0.15s;
+}
+.council-seat.excluded { opacity: 0.45; }
+.council-seat-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.council-seat-toggle input { cursor: pointer; }
+.council-seat-name { font-size: 0.88rem; font-weight: 600; color: var(--text); }
+.council-seat-desc { font-size: 0.78rem; color: var(--text-muted); margin: 4px 0 0 22px; }
+.council-seat-config {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  margin-left: 22px;
+}
+.council-seat-provider {
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.council-seat-model-input {
+  flex: 1;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-family: monospace;
+}
+.council-seat-model-input:focus { outline: none; border-color: var(--accent); }
+
+.council-seat-instances {
+  width: 48px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 0.8rem;
+  text-align: center;
+}
+.council-seat-instances:focus { outline: none; border-color: var(--accent); }
+
+/* ── Persona library (T134) ───────────────────────────────────────────────── */
+
+.persona-library-dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(860px, 92vw);
+  height: 75vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+}
+.persona-library-header {
+  display: flex;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+}
+.persona-library-title { font-size: 1rem; font-weight: 700; color: var(--text); margin: 0; flex: 1; }
+.persona-library-body { flex: 1; display: flex; overflow: hidden; }
+
+.persona-library-list {
+  width: 200px;
+  min-width: 200px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  gap: 2px;
+}
+.persona-new-btn {
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--accent);
+  width: 100%;
+  text-align: left;
+  margin-bottom: 4px;
+}
+.persona-new-btn:hover { background: var(--surface2); }
+
+.persona-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.83rem;
+}
+.persona-list-item:hover { background: var(--surface2); }
+.persona-list-item.active { background: color-mix(in srgb, var(--accent) 15%, var(--surface2)); }
+.persona-list-name { color: var(--text); font-weight: 500; }
+.persona-list-scope { font-size: 0.7rem; color: var(--text-muted); }
+
+.persona-library-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px;
+}
+.persona-editor-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+.persona-editor-fields {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.persona-field-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.persona-field-hint { font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 0.7rem; }
+.persona-field-input {
+  padding: 6px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 0.85rem;
+  width: 100%;
+}
+.persona-field-input:focus { outline: none; border-color: var(--accent); }
+.persona-field-textarea {
+  flex: 1;
+  min-height: 280px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-family: monospace;
+  resize: vertical;
+  line-height: 1.55;
+  width: 100%;
+}
+.persona-field-textarea:focus { outline: none; border-color: var(--accent); }
+.persona-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+}
+.persona-delete-btn {
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
+  background: transparent;
+  color: var(--red);
+}
+.persona-delete-btn:hover { background: color-mix(in srgb, var(--red) 10%, transparent); }
+
+/* ── Tmux session drawer ─────────────────────────────────────────────────── */
+
+.tmux-drawer-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.tmux-sessions-btn {
+  position: relative;
+  font-size: 1.05rem;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tmux-sessions-btn.has-sessions { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 40%, transparent); }
+.tmux-sessions-btn:hover { color: var(--text-bright); border-color: var(--border); }
+
+.tmux-session-badge {
+  background: var(--blue);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 1.5;
+  min-width: 16px;
+  text-align: center;
+}
+
+.tmux-drawer-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 320px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  z-index: 1200;
+  overflow: hidden;
+}
+
+.tmux-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+
+.tmux-drawer-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0 2px;
+}
+.tmux-drawer-close:hover { color: var(--text-bright); }
+
+.tmux-drawer-empty {
+  padding: 16px 12px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.tmux-session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-sub);
+}
+.tmux-session-row:last-child { border-bottom: none; }
+.tmux-session-row:hover { background: var(--bg-hover); }
+
+.tmux-type-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.tmux-type-planning  { background: color-mix(in srgb, var(--blue)   20%, transparent); color: var(--blue); }
+.tmux-type-architect { background: color-mix(in srgb, var(--purple) 20%, transparent); color: var(--purple); }
+.tmux-type-council   { background: color-mix(in srgb, var(--yellow) 20%, transparent); color: var(--yellow); }
+.tmux-type-other     { background: color-mix(in srgb, var(--text)   10%, transparent); color: var(--text-muted); }
+
+.tmux-session-label {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tmux-session-open-btn {
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--blue);
+  font-size: 0.75rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.tmux-session-open-btn:hover { background: color-mix(in srgb, var(--blue) 15%, transparent); border-color: color-mix(in srgb, var(--blue) 50%, transparent); }

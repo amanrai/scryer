@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ProjectSettingsPanel from '../components/ProjectSettingsPanel.jsx'
 import AgentPermissionsPanel from '../components/AgentPermissionsPanel.jsx'
+import PersonaLibraryPanel from '../components/PersonaLibraryPanel.jsx'
 import { useTheme } from '../App.jsx'
 
 const GIT_BACKENDS = ['', 'forgejo', 'github', 'gitlab']
@@ -18,7 +19,8 @@ function GlobalConfigPanel({ onClose }) {
   const [form, setForm]   = useState({ scryer_root: '', code_root: '', discord_token: '', discord_server_id: '', oracle_provider: 'claude', oracle_model: 'claude-haiku-4-5-20251001' })
   const [loading, setLoading]           = useState(true)
   const [saving, setSaving]             = useState(false)
-  const [agentPermsOpen, setAgentPermsOpen] = useState(false)
+  const [agentPermsOpen, setAgentPermsOpen]   = useState(false)
+  const [personaLibOpen, setPersonaLibOpen]   = useState(false)
   const { theme, setTheme }             = useTheme()
 
   useEffect(() => {
@@ -104,9 +106,13 @@ function GlobalConfigPanel({ onClose }) {
           <button className="btn-agent-perms" onClick={() => setAgentPermsOpen(true)}>
             Configure Default Allowed Actions For Agents
           </button>
+          <button className="btn-agent-perms" onClick={() => setPersonaLibOpen(true)}>
+            Manage Council Personas
+          </button>
         </>
       )}
       {agentPermsOpen && <AgentPermissionsPanel onClose={() => setAgentPermsOpen(false)} />}
+      {personaLibOpen && <PersonaLibraryPanel onClose={() => setPersonaLibOpen(false)} />}
     </div>
   )
 }

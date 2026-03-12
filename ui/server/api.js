@@ -10,7 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(__dirname, '..', '..')
 const AGENT_PERMS_DEFAULTS_PATH = join(__dirname, 'config', 'agent-permissions.defaults.json')
 const GLOBAL_TEMPLATES_DIR   = join(REPO_ROOT, 'templates')
-const PERSONAS_TEMPLATES_DIR = join(REPO_ROOT, 'templates', 'personas')
+const PERSONAS_DIR           = join(REPO_ROOT, 'council', 'personas')
 const DB_PATH = process.env.PM_DB_PATH ||
   join(__dirname, '..', '..', 'infra', 'ProjectManagement', 'data', 'pm.db')
 
@@ -57,26 +57,6 @@ db.exec(`
   }
 })()
 
-// Seed default personas from templates/personas/ (INSERT OR IGNORE by name — never overwrite edits)
-;(function seedPersonas() {
-  try {
-    if (!existsSync(PERSONAS_TEMPLATES_DIR)) return
-    const files = readdirSync(PERSONAS_TEMPLATES_DIR).filter(f => f.endsWith('.md'))
-    const insert = db.prepare(
-      `INSERT OR IGNORE INTO personas (name, description, template_content, is_global, project_id, created_at) VALUES (?, ?, ?, 1, NULL, ?)`
-    )
-    for (const file of files) {
-      const content = readFileSync(join(PERSONAS_TEMPLATES_DIR, file), 'utf8')
-      // First line is `# Name`, second line is blank, third is description sentence
-      const lines = content.split('\n')
-      const name = lines[0].replace(/^#\s*/, '').trim()
-      const desc = lines.find((l, i) => i > 0 && l.trim()) || ''
-      insert.run(name, desc, content, new Date().toISOString())
-    }
-  } catch (e) {
-    console.warn('seedPersonas: could not seed default personas:', e.message)
-  }
-})()
 
 // Add agent preference columns if they don't exist yet
 ;['planning_agent', 'architect_agent'].forEach(col => {
@@ -467,7 +447,7 @@ router.get('/projects/:name', (req, res) => {
     if (!defaultNode) return []
 
     const tickets = db.prepare(`
-      SELECT id, title, description, state, priority
+      SELECT id, title, description, state, priority, spl_ticket_type
       FROM tickets
       WHERE project_id = ?
       ORDER BY created_at
@@ -1386,6 +1366,97 @@ router.post('/tmux/kill', (req, res) => {
   res.json({ ok: true })
 })
 
+// GET /api/projects/:name/tmux-sessions — list running tmux sessions for this project
+router.get('/projects/:name/tmux-sessions', (req, res) => {
+  const projectName = req.params.name
+
+  // Collect entity IDs that belong to this project
+  const rootProject = db.prepare(`SELECT id FROM projects WHERE name = ? AND parent_id IS NULL`).get(projectName)
+  const spIds    = new Set()
+  const ticketIds = new Set()
+  const debateIds = new Set()
+
+  if (rootProject) {
+    const subprojects = db.prepare(`SELECT id FROM projects WHERE parent_id = ?`).all(rootProject.id)
+    for (const sp of subprojects) spIds.add(String(sp.id))
+
+    // Tickets across root + all sub-projects
+    const projectIds = [rootProject.id, ...subprojects.map(s => s.id)]
+    for (const pid of projectIds) {
+      const tickets = db.prepare(`SELECT id FROM tickets WHERE project_id = ?`).all(pid)
+      for (const t of tickets) ticketIds.add(String(t.id))
+    }
+
+    // Council tickets for this project's entities
+    try {
+      const spPlaceholders = spIds.size > 0 ? [...spIds].map(() => '?').join(',') : 'NULL'
+      const tPlaceholders  = ticketIds.size > 0 ? [...ticketIds].map(() => '?').join(',') : 'NULL'
+      const councilTickets = db.prepare(`
+        SELECT id FROM tickets
+        WHERE spl_ticket_type = 1
+          AND ((entity_type = 'project' AND entity_id = ?)
+            OR (entity_type = 'subproject' AND entity_id IN (${spPlaceholders}))
+            OR (entity_type = 'ticket'     AND entity_id IN (${tPlaceholders})))
+      `).all(projectName, ...[...spIds], ...[...ticketIds])
+      for (const d of councilTickets) debateIds.add(String(d.id))
+    } catch {
+      // fallback — debateIds stays empty
+    }
+  }
+
+  const tmux = spawnSync('/opt/homebrew/bin/tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8' })
+  const names = (tmux.stdout || '').split('\n').map(s => s.trim()).filter(Boolean)
+
+  const sessions = []
+  for (const name of names) {
+    let type = null, label = null
+
+    if (name.startsWith('planning-project-')) {
+      const rest = name.slice('planning-project-'.length) // e.g. "Scryer"
+      if (rest === projectName) { type = 'planning'; label = `Plan — ${rest}` }
+
+    } else if (name.startsWith('planning-subproject-')) {
+      const id = name.slice('planning-subproject-'.length)
+      if (spIds.has(id)) { type = 'planning'; label = `Plan — SP ${id}` }
+
+    } else if (name.startsWith('planning-ticket-')) {
+      const id = name.slice('planning-ticket-'.length)
+      if (ticketIds.has(id)) { type = 'planning'; label = `Plan — T${id}` }
+
+    } else if (name.startsWith('architect-project-')) {
+      // format: architect-project-{name}-{mode}
+      const rest = name.slice('architect-project-'.length)
+      const modeIdx = rest.lastIndexOf('-')
+      const projPart = modeIdx > 0 ? rest.slice(0, modeIdx) : rest
+      const mode     = modeIdx > 0 ? rest.slice(modeIdx + 1) : ''
+      if (projPart === projectName) { type = 'architect'; label = `Arch — ${projPart} (${mode})` }
+
+    } else if (name.startsWith('architect-subproject-')) {
+      const rest = name.slice('architect-subproject-'.length)
+      const modeIdx = rest.lastIndexOf('-')
+      const id = modeIdx > 0 ? rest.slice(0, modeIdx) : rest
+      const mode = modeIdx > 0 ? rest.slice(modeIdx + 1) : ''
+      if (spIds.has(id)) { type = 'architect'; label = `Arch — SP ${id} (${mode})` }
+
+    } else if (name.startsWith('architect-ticket-')) {
+      const rest = name.slice('architect-ticket-'.length)
+      const modeIdx = rest.lastIndexOf('-')
+      const id = modeIdx > 0 ? rest.slice(0, modeIdx) : rest
+      const mode = modeIdx > 0 ? rest.slice(modeIdx + 1) : ''
+      if (ticketIds.has(id)) { type = 'architect'; label = `Arch — T${id} (${mode})` }
+
+    } else if (name.startsWith('council-')) {
+      const id = name.slice('council-'.length)
+      // Show if debate belongs to this project, or as fallback show all council sessions
+      if (debateIds.has(id) || debateIds.size === 0) { type = 'council'; label = `Council ${id}` }
+    }
+
+    if (type) sessions.push({ name, type, label })
+  }
+
+  res.json({ sessions })
+})
+
 // POST /api/clone-codebase — clone a remote git repo to dest
 router.post('/clone-codebase', (req, res) => {
   const { url, dest } = req.body
@@ -1463,7 +1534,22 @@ router.post('/agent-permissions/reset', (_req, res) => {
 
 // ── Council ─────────────────────────────────────────────────────────────────────
 
-// GET /api/projects/:name/debates — all debates for entities within this project
+function dict_debate(row) {
+  const roundRow = db.prepare(
+    `SELECT COALESCE(MAX(round), 1) AS round FROM council_turns WHERE ticket_id = ?`
+  ).get(row.id)
+  return {
+    id:          row.id,
+    entity_type: row.entity_type,
+    entity_id:   row.entity_id,
+    state:       'active',
+    round:       roundRow ? roundRow.round : 1,
+    created_at:  row.created_at,
+    updated_at:  row.updated_at,
+  }
+}
+
+// GET /api/projects/:name/debates — all council tickets for entities within this project
 router.get('/projects/:name/debates', (req, res) => {
   const project = db.prepare(
     `SELECT id, name FROM projects WHERE name = ? AND is_default = 0 AND parent_id IS NULL`
@@ -1471,140 +1557,112 @@ router.get('/projects/:name/debates', (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
 
   try {
-    // All SP ids under this project
     const spIds = db.prepare(
       `SELECT id FROM projects WHERE parent_id = ? AND is_default = 0`
     ).all(project.id).map(r => r.id)
 
-    // All ticket ids under this project (through default nodes)
     const defaultNodes = db.prepare(
       `SELECT id FROM projects WHERE (parent_id = ? OR parent_id IN (${spIds.map(() => '?').join(',')})) AND is_default = 1`
     ).all(project.id, ...spIds)
     const defaultIds = defaultNodes.map(r => r.id)
     const ticketIds = defaultIds.length
-      ? db.prepare(`SELECT id FROM tickets WHERE project_id IN (${defaultIds.map(() => '?').join(',')})`).all(...defaultIds).map(r => r.id)
+      ? db.prepare(`SELECT id FROM tickets WHERE project_id IN (${defaultIds.map(() => '?').join(',')}) AND spl_ticket_type = 0`).all(...defaultIds).map(r => r.id)
       : []
 
-    const debates = []
+    const spPlaceholders = spIds.length ? spIds.map(() => '?').join(',') : 'NULL'
+    const tPlaceholders  = ticketIds.length ? ticketIds.map(() => '?').join(',') : 'NULL'
+    const rows = db.prepare(`
+      SELECT * FROM tickets
+      WHERE spl_ticket_type = 1
+        AND ((entity_type = 'project' AND entity_id = ?)
+          OR (entity_type = 'subproject' AND entity_id IN (${spPlaceholders}))
+          OR (entity_type = 'ticket'     AND entity_id IN (${tPlaceholders})))
+      ORDER BY created_at DESC
+    `).all(project.name, ...spIds, ...ticketIds)
 
-    // Project-level debate
-    const projDebate = db.prepare(
-      `SELECT * FROM council_debates WHERE entity_type = 'project' AND entity_id = ?`
-    ).get(project.name)
-    if (projDebate) debates.push(dict_debate(projDebate))
-
-    // SP debates
-    for (const spId of spIds) {
-      const d = db.prepare(
-        `SELECT * FROM council_debates WHERE entity_type = 'subproject' AND entity_id = ?`
-      ).get(String(spId))
-      if (d) debates.push(dict_debate(d))
-    }
-
-    // Ticket debates
-    for (const tId of ticketIds) {
-      const d = db.prepare(
-        `SELECT * FROM council_debates WHERE entity_type = 'ticket' AND entity_id = ?`
-      ).get(String(tId))
-      if (d) debates.push(dict_debate(d))
-    }
-
-    res.json({ debates })
+    res.json({ debates: rows.map(dict_debate) })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
 })
 
-function dict_debate(row) {
-  return {
-    id:          row.id,
-    entity_type: row.entity_type,
-    entity_id:   row.entity_id,
-    state:       row.state,
-    round:       row.round,
-    created_at:  row.created_at,
-    updated_at:  row.updated_at,
-  }
-}
-
-// GET /api/debates?entity_type=X&entity_id=Y — find a debate by entity
+// GET /api/debates?entity_type=X&entity_id=Y — find a council ticket by entity
 router.get('/debates', (req, res) => {
   const { entity_type, entity_id } = req.query
   if (!entity_type || !entity_id) return res.status(400).json({ error: 'entity_type and entity_id required' })
   const row = db.prepare(
-    `SELECT * FROM council_debates WHERE entity_type = ? AND entity_id = ?`
+    `SELECT * FROM tickets WHERE spl_ticket_type = 1 AND entity_type = ? AND entity_id = ?`
   ).get(entity_type, entity_id)
   if (!row) return res.json({ debate: null })
   res.json({ debate: dict_debate(row) })
 })
 
-// GET /api/debates/:id — full debate with members, comments, and actions
+// GET /api/debates/:id — full council ticket with members and comments
 router.get('/debates/:id', (req, res) => {
   const id = parseInt(req.params.id)
-  const debate = db.prepare(`SELECT * FROM council_debates WHERE id = ?`).get(id)
-  if (!debate) return res.status(404).json({ error: 'Debate not found' })
+  const ticket = db.prepare(`SELECT * FROM tickets WHERE id = ? AND spl_ticket_type = 1`).get(id)
+  if (!ticket) return res.status(404).json({ error: 'Council ticket not found' })
 
   const members = db.prepare(
-    `SELECT cm.*, p.name AS persona_name FROM council_members cm JOIN personas p ON p.id = cm.persona_id WHERE cm.debate_id = ? ORDER BY cm.seat_order`
+    `SELECT cm.*, p.name AS persona_name
+     FROM council_members cm JOIN personas p ON p.id = cm.persona_id
+     WHERE cm.ticket_id = ? ORDER BY cm.seat_order`
   ).all(id)
 
   const comments = db.prepare(
-    `SELECT cc.*, p.name AS persona_name
-     FROM council_comments cc
-     LEFT JOIN council_members cm ON cm.id = cc.member_id
-     LEFT JOIN personas p ON p.id = cm.persona_id
-     WHERE cc.debate_id = ? AND cc.author != 'human_pending'
-     ORDER BY cc.created_at`
+    `SELECT id, author, content, created_at
+     FROM comments WHERE ticket_id = ? AND is_root = 0
+     ORDER BY created_at`
   ).all(id)
 
-  const actions = db.prepare(
-    `SELECT ca.*, p.name AS persona_name
-     FROM council_actions ca
-     LEFT JOIN council_members cm ON cm.id = ca.member_id
-     LEFT JOIN personas p ON p.id = cm.persona_id
-     WHERE ca.debate_id = ? ORDER BY ca.created_at`
-  ).all(id)
+  res.json({ debate: dict_debate(ticket), members, comments })
+})
 
-  res.json({ debate, members, comments, actions })
+// POST /api/debates/:id/end — end a council session (clears members/turns; ticket + comments persist)
+router.post('/debates/:id/end', (req, res) => {
+  const id = parseInt(req.params.id)
+  const row = db.prepare(`SELECT id FROM tickets WHERE id = ? AND spl_ticket_type = 1`).get(id)
+  if (!row) return res.status(404).json({ error: 'Council ticket not found' })
+  db.prepare(`DELETE FROM council_members WHERE ticket_id = ?`).run(id)
+  db.prepare(`DELETE FROM council_turns   WHERE ticket_id = ?`).run(id)
+  res.json({ ok: true })
 })
 
 // POST /api/council/launch — launch a council session for an entity
 router.post('/council/launch', (req, res) => {
-  const { entity_type, entity_id, warmup = 15 } = req.body
+  const { entity_type, entity_id, warmup = 15, seats } = req.body
   if (!entity_type || !entity_id) {
     return res.status(400).json({ error: 'entity_type and entity_id required' })
   }
-  const scryer_root = db.prepare(`SELECT value FROM scryer_config WHERE key = 'scryer_root'`).get()?.value
-  if (!scryer_root) {
-    return res.status(400).json({ error: 'scryer_root not configured. Set it in Global Config.' })
-  }
   const launcher = join(__dirname, '..', '..', 'council', 'launch.py')
-  const result = spawnSync('python3', [
-    launcher,
-    '--type', entity_type,
-    '--id', String(entity_id),
-    '--warmup', String(warmup),
-    '--no-attach',
-  ], { encoding: 'utf8', timeout: 30000 })
+  const payload = JSON.stringify({ entity_type, entity_id, warmup, seats: seats ?? null })
+  const result = spawnSync('python3', [launcher, '--from-stdin', '--no-attach'], {
+    input: payload, encoding: 'utf8', timeout: 30000,
+  })
   if (result.status !== 0) {
-    return res.status(500).json({ error: result.stderr?.trim() || 'Council launch failed' })
+    const errMsg = result.stderr?.trim() || result.stdout?.trim() || 'Council launch failed'
+    return res.status(500).json({ error: errMsg })
   }
   res.json({ ok: true })
 })
 
 // ── Personas ────────────────────────────────────────────────────────────────────
 
-// GET /api/personas — list all global personas (+ project-specific if project_id given)
+// GET /api/personas — list all personas from council/personas/*.md (no DB)
 router.get('/personas', (req, res) => {
-  const projectId = req.query.project_id ? parseInt(req.query.project_id) : null
   try {
-    let rows
-    if (projectId) {
-      rows = db.prepare(`SELECT * FROM personas WHERE is_global = 1 OR project_id = ? ORDER BY name`).all(projectId)
-    } else {
-      rows = db.prepare(`SELECT * FROM personas WHERE is_global = 1 ORDER BY name`).all()
-    }
-    res.json({ personas: rows })
+    if (!existsSync(PERSONAS_DIR)) return res.json({ personas: [] })
+    const files = readdirSync(PERSONAS_DIR)
+      .filter(f => f.endsWith('.md'))
+      .sort()
+    const personas = files.map(file => {
+      const slug = basename(file, '.md')
+      const name = slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      const template_path = `council/personas/${file}`
+      const template_content = readFileSync(join(PERSONAS_DIR, file), 'utf8')
+      return { id: slug, name, template_path, template_content }
+    })
+    res.json({ personas })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }

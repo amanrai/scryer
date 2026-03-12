@@ -48,95 +48,69 @@ def _conn():
     return c
 
 
-def _debate_row(debate_id: int) -> dict | None:
+def _ticket_row(ticket_id: int) -> dict | None:
     with _conn() as c:
-        r = c.execute("SELECT * FROM council_debates WHERE id = ?", (debate_id,)).fetchone()
+        r = c.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
         return dict(r) if r else None
 
 
-def _active_members(debate_id: int) -> list[dict]:
+def _read_template(template_path: str) -> str:
+    p = REPO_ROOT / template_path
+    return p.read_text() if p.exists() else f"# {template_path}\n(template file not found)"
+
+
+def _slug_to_name(slug: str) -> str:
+    return slug.replace("-", " ").title()
+
+
+def _active_members(ticket_id: int) -> list[dict]:
     with _conn() as c:
         rows = c.execute(
-            """SELECT cm.*, p.name AS persona_name, p.template_content
-               FROM council_members cm
-               JOIN personas p ON p.id = cm.persona_id
-               WHERE cm.debate_id = ? AND cm.state = 'active'
-               ORDER BY cm.seat_order""",
-            (debate_id,)
+            "SELECT * FROM council_members WHERE ticket_id = ? AND state = 'active' ORDER BY seat_order",
+            (ticket_id,)
+        ).fetchall()
+    members = [dict(r) for r in rows]
+    for m in members:
+        slug = m.get("persona_slug", "")
+        m["persona_name"] = _slug_to_name(slug)
+        m["template_content"] = _read_template(f"council/personas/{slug}.md")
+    return members
+
+
+def _turns_this_round(ticket_id: int, round_num: int) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM council_turns WHERE ticket_id = ? AND round = ?",
+            (ticket_id, round_num)
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def _turns_this_round(debate_id: int, round_num: int) -> list[dict]:
-    with _conn() as c:
-        rows = c.execute(
-            "SELECT * FROM council_turns WHERE debate_id = ? AND round = ?",
-            (debate_id, round_num)
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def _latest_turn_for_member(debate_id: int, member_id: int, round_num: int) -> dict | None:
+def _latest_turn_for_member(ticket_id: int, member_id: int, round_num: int) -> dict | None:
     with _conn() as c:
         r = c.execute(
-            "SELECT * FROM council_turns WHERE debate_id = ? AND member_id = ? AND round = ? "
+            "SELECT * FROM council_turns WHERE ticket_id = ? AND member_id = ? AND round = ? "
             "ORDER BY id DESC LIMIT 1",
-            (debate_id, member_id, round_num)
+            (ticket_id, member_id, round_num)
         ).fetchone()
     return dict(r) if r else None
 
 
-def _pending_human_turn(debate_id: int) -> bool:
-    """True if a human_pending comment exists (raise_hand was called)."""
-    with _conn() as c:
-        r = c.execute(
-            "SELECT id FROM council_comments WHERE debate_id = ? AND author = 'human_pending' LIMIT 1",
-            (debate_id,)
-        ).fetchone()
-    return r is not None
-
-
-def _clear_human_pending(debate_id: int) -> None:
-    with _conn() as c:
-        c.execute(
-            "DELETE FROM council_comments WHERE debate_id = ? AND author = 'human_pending'",
-            (debate_id,)
-        )
-
-
-def _grant_turn_db(debate_id: int, member_id: int | None, round_num: int) -> int:
+def _grant_turn_db(ticket_id: int, member_id: int | None, round_num: int) -> int:
     """Insert a turn record and return its id."""
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         cur = c.execute(
-            "INSERT INTO council_turns (debate_id, member_id, round, did_comment, completed_at) "
+            "INSERT INTO council_turns (ticket_id, member_id, round, did_comment, completed_at) "
             "VALUES (?, ?, ?, 0, NULL)",
-            (debate_id, member_id, round_num)
+            (ticket_id, member_id, round_num)
         )
     return cur.lastrowid
 
 
-def _advance_round_db(debate_id: int, new_round: int) -> None:
-    now = datetime.now(timezone.utc).isoformat()
-    with _conn() as c:
-        c.execute(
-            "UPDATE council_debates SET round = ?, state = 'active', updated_at = ? WHERE id = ?",
-            (new_round, now, debate_id)
-        )
-
-
-def _set_debate_state(debate_id: int, state: str) -> None:
-    now = datetime.now(timezone.utc).isoformat()
-    with _conn() as c:
-        c.execute(
-            "UPDATE council_debates SET state = ?, updated_at = ? WHERE id = ?",
-            (state, now, debate_id)
-        )
-
-
-def _check_convergence(debate_id: int, round_num: int) -> bool:
-    members = _active_members(debate_id)
-    turns   = _turns_this_round(debate_id, round_num)
+def _check_convergence(ticket_id: int, round_num: int) -> bool:
+    members = _active_members(ticket_id)
+    turns   = _turns_this_round(ticket_id, round_num)
     completed = {t["member_id"] for t in turns if t["completed_at"]}
     active    = {m["id"] for m in members}
     if active != completed:
@@ -144,50 +118,87 @@ def _check_convergence(debate_id: int, round_num: int) -> bool:
     return all(t["did_comment"] == 0 for t in turns if t["member_id"] in active)
 
 
-def _get_or_create_debate(entity_type: str, entity_id: str) -> dict:
+def _default_node_for_entity(entity_type: str, entity_id: str, c) -> int:
+    """Return the project_id (default node) where the council ticket should be stored."""
+    if entity_type == "project":
+        proj = c.execute(
+            "SELECT id FROM projects WHERE name = ? AND is_default = 0", (entity_id,)
+        ).fetchone()
+        if not proj:
+            raise ValueError(f"Project '{entity_id}' not found")
+        default = c.execute(
+            "SELECT id FROM projects WHERE parent_id = ? AND is_default = 1", (proj["id"],)
+        ).fetchone()
+        return default["id"]
+    elif entity_type == "subproject":
+        default = c.execute(
+            "SELECT id FROM projects WHERE parent_id = ? AND is_default = 1", (int(entity_id),)
+        ).fetchone()
+        if not default:
+            raise ValueError(f"Sub-project {entity_id} has no default node")
+        return default["id"]
+    elif entity_type == "ticket":
+        t = c.execute("SELECT project_id FROM tickets WHERE id = ?", (int(entity_id),)).fetchone()
+        if not t:
+            raise ValueError(f"Ticket {entity_id} not found")
+        return t["project_id"]
+    raise ValueError(f"Unknown entity_type: {entity_type}")
+
+
+def _get_or_create_ticket(entity_type: str, entity_id: str) -> dict:
+    """Find the council ticket for this entity, or create one."""
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         existing = c.execute(
-            "SELECT * FROM council_debates WHERE entity_type = ? AND entity_id = ?",
+            "SELECT * FROM tickets WHERE spl_ticket_type = 1 AND entity_type = ? AND entity_id = ?",
             (entity_type, entity_id)
         ).fetchone()
         if existing:
-            print(f"Resuming existing debate id={existing['id']} (state={existing['state']})")
+            print(f"Resuming council ticket id={existing['id']}")
             return dict(existing)
+        project_id = _default_node_for_entity(entity_type, entity_id, c)
+        title = f"Council — {entity_type}:{entity_id}"
         cur = c.execute(
-            "INSERT INTO council_debates (entity_type, entity_id, state, round, created_at, updated_at) "
-            "VALUES (?, ?, 'active', 1, ?, ?)",
-            (entity_type, entity_id, now, now)
+            "INSERT INTO tickets "
+            "(project_id, title, description, state, priority, spl_ticket_type, entity_type, entity_id, created_at, updated_at) "
+            "VALUES (?, ?, '', 'In Progress', 'medium', 1, ?, ?, ?, ?)",
+            (project_id, title, entity_type, entity_id, now, now)
         )
-        debate_id = cur.lastrowid
-        row = c.execute("SELECT * FROM council_debates WHERE id = ?", (debate_id,)).fetchone()
-        print(f"Created new debate id={debate_id}")
+        ticket_id = cur.lastrowid
+        # Root comment sentinel (required by PM comment chain)
+        c.execute(
+            "INSERT INTO comments (ticket_id, parent_id, author, content, is_root, created_at) "
+            "VALUES (?, NULL, 'system', '', 1, ?)",
+            (ticket_id, now)
+        )
+        row = c.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        print(f"Created council ticket id={ticket_id}")
         return dict(row)
 
 
-def _add_members_from_seat_list(debate_id: int, seats: list[dict]) -> list[dict]:
+def _add_members_from_seat_list(ticket_id: int, seats: list[dict]) -> list[dict]:
     """
-    seats: list of {persona_id, provider, model, seat_order}
+    seats: list of {persona_slug, provider, model, seat_order}
     Inserts council_member rows, returns them with persona_name attached.
-    Skips if members already exist for this debate.
+    Skips if members already exist for this ticket.
     """
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         existing = c.execute(
-            "SELECT id FROM council_members WHERE debate_id = ?", (debate_id,)
+            "SELECT id FROM council_members WHERE ticket_id = ?", (ticket_id,)
         ).fetchall()
         if existing:
-            print(f"Debate already has {len(existing)} members — skipping member setup.")
+            print(f"Council ticket already has {len(existing)} members — skipping member setup.")
         else:
             for seat in seats:
                 c.execute(
                     "INSERT INTO council_members "
-                    "(debate_id, persona_id, seat_order, provider, model, state, created_at) "
+                    "(ticket_id, persona_slug, seat_order, provider, model, state, created_at) "
                     "VALUES (?, ?, ?, ?, ?, 'active', ?)",
-                    (debate_id, seat["persona_id"], seat["seat_order"],
+                    (ticket_id, seat["persona_slug"], seat["seat_order"],
                      seat.get("provider", "claude"), seat.get("model", "claude-sonnet-4-6"), now)
                 )
-    return _active_members(debate_id)
+    return _active_members(ticket_id)
 
 
 def _entity_summary(entity_type: str, entity_id: str) -> str:
@@ -224,42 +235,16 @@ def _entity_summary(entity_type: str, entity_id: str) -> str:
 
 # ── CLAUDE.md builder ─────────────────────────────────────────────────────────
 
-def _build_persona_claude_md(member: dict, debate: dict, entity_summary: str) -> str:
-    return f"""{member['template_content']}
+_SESSION_TEMPLATE = (COUNCIL_DIR / "session.md").read_text()
 
----
 
-## Council session context
-
-**Debate ID:** {debate['id']}
-**Your Member ID:** {member['id']}
-**Entity under review:**
-
-{entity_summary}
-
----
-
-## Council MCP tools (council-local)
-
-You have access to the `council-local` MCP server. The tools you will use:
-
-- `get_debate_state(debate_id)` — read the full discussion history and turn status
-- `add_council_comment(debate_id, member_id, content, author)` — write your analysis
-- `submit_turn(debate_id, member_id, did_comment, turn_id)` — signal you are done
-
-**member_id for all your calls: {member['id']}**
-
-## Waiting for your turn
-
-You will receive a message: **COUNCIL TURN GRANTED: ...** when it is your turn to speak.
-Do not act until you receive this message. Stay idle and wait.
-
-When your turn is granted:
-1. Call `get_debate_state({debate['id']})` to read the full discussion.
-2. If you have something new to add: call `add_council_comment`, then `submit_turn` with `did_comment=true`.
-3. If you have nothing new to add: call `submit_turn` with `did_comment=false`.
-4. Do not take any other action. Read and comment only.
-"""
+def _build_persona_claude_md(member: dict, ticket: dict, entity_summary: str) -> str:
+    session = _SESSION_TEMPLATE.format(
+        ticket_id=ticket['id'],
+        member_id=member['id'],
+        entity_summary=entity_summary,
+    )
+    return f"{member['template_content']}\n{session}"
 
 
 # ── tmux helpers ──────────────────────────────────────────────────────────────
@@ -292,21 +277,21 @@ def _agent_command(provider: str) -> str:
 
 # ── Session management ────────────────────────────────────────────────────────
 
-def _session_name(debate_id: int) -> str:
-    return f"council-{debate_id}"
+def _session_name(ticket_id: int) -> str:
+    return f"council-{ticket_id}"
 
 
 def _window_name(persona_name: str) -> str:
     return persona_name.lower().replace(" ", "-")[:20]
 
 
-def launch_persona_windows(debate_id: int, members: list[dict], work_dir: str,
+def launch_persona_windows(ticket_id: int, members: list[dict], work_dir: str,
                             warmup: int = 15) -> None:
     """
-    Create one tmux window per persona in the council-{debate_id} session.
+    Create one tmux window per persona in the council-{ticket_id} session.
     Each window runs the persona's agent with its CLAUDE.md injected.
     """
-    session = _session_name(debate_id)
+    session = _session_name(ticket_id)
     if not _session_exists(session):
         _tmux("new-session", "-d", "-s", session, "-c", work_dir, "-x", "220", "-y", "50")
         # Rename the default window to 'orchestrator'
@@ -314,117 +299,107 @@ def launch_persona_windows(debate_id: int, members: list[dict], work_dir: str,
 
     for i, member in enumerate(members):
         win = _window_name(member["persona_name"])
-        # Create a new window for this persona
-        _tmux("new-window", "-t", session, "-n", win, "-c", work_dir)
 
-        # Write persona's CLAUDE.md to the work_dir (unique per persona)
-        persona_slug = win
-        claude_md_path = Path(work_dir) / f"COUNCIL-{persona_slug}.md"
-        # Entity summary is embedded in the CLAUDE.md already; write file for reference
-        claude_md_path.write_text(member["_claude_md"])
+        # Each persona gets its own subdirectory with a CLAUDE.md.
+        # Claude Code reads it automatically on startup — no file-read prompt needed.
+        persona_dir = Path(work_dir) / win
+        persona_dir.mkdir(exist_ok=True)
+        (persona_dir / "CLAUDE.md").write_text(member["_claude_md"])
 
-        agent_cmd = _agent_command(member["provider"])
+        # Write helper scripts — agents run these instead of curl
+        tid = ticket_id
+        mid = member["id"]
+        (persona_dir / "state.py").write_text(
+            f"import urllib.request, json\n"
+            f"r = urllib.request.urlopen('http://127.0.0.1:7656/debates/{tid}')\n"
+            f"print(json.dumps(json.loads(r.read()), indent=2))\n"
+        )
+        (persona_dir / "comment.py").write_text(
+            f"import sys, json, urllib.request\n"
+            f"content = ' '.join(sys.argv[1:])\n"
+            f"data = json.dumps({{'member_id': {mid}, 'content': content}}).encode()\n"
+            f"req = urllib.request.Request('http://127.0.0.1:7656/debates/{tid}/comments',\n"
+            f"    data=data, headers={{'Content-Type': 'application/json'}})\n"
+            f"print(urllib.request.urlopen(req).read().decode())\n"
+        )
+        (persona_dir / "submit.py").write_text(
+            f"import sys, json, urllib.request\n"
+            f"turn_id = int(sys.argv[1])\n"
+            f"did_comment = sys.argv[2].lower() == 'true'\n"
+            f"data = json.dumps({{'member_id': {mid}, 'did_comment': did_comment}}).encode()\n"
+            f"req = urllib.request.Request(\n"
+            f"    f'http://127.0.0.1:7656/debates/{tid}/turns/{{turn_id}}/submit',\n"
+            f"    data=data, headers={{'Content-Type': 'application/json'}})\n"
+            f"print(urllib.request.urlopen(req).read().decode())\n"
+        )
+
+        # Copy session-level settings into persona dir
+        for fname in [".claude/settings.json"]:
+            src = Path(work_dir) / fname
+            dst = persona_dir / fname
+            if src.exists():
+                dst.parent.mkdir(exist_ok=True)
+                dst.write_text(src.read_text())
+
+        _tmux("new-window", "-t", session, "-n", win, "-c", str(persona_dir))
+
         import subprocess
+        agent_cmd = _agent_command(member["provider"])
         subprocess.run([TMUX, "send-keys", "-t", f"{session}:{win}", agent_cmd, "Enter"],
                        check=False)
-
-        # After warmup, send startup message
-        startup_msg = (
-            f"Please read COUNCIL-{persona_slug}.md carefully. "
-            f"This defines your role and the council session context. "
-            f"Once you have read it, confirm you are ready and wait for your turn to be granted."
-        )
-        import subprocess as sp
-        script = (
-            f"sleep {warmup + i * 3} && "
-            f"{TMUX} send-keys -t {shlex.quote(f'{session}:{win}')} "
-            f"{shlex.quote(startup_msg)} Enter"
-        )
-        sp.Popen(["bash", "-c", script], close_fds=True, start_new_session=True,
-                 stdout=sp.DEVNULL, stderr=sp.DEVNULL)
 
     print(f"Launched {len(members)} persona windows in session '{session}'.")
 
 
 # ── Orchestration loop ────────────────────────────────────────────────────────
 
-def orchestrate(debate_id: int, work_dir: str) -> None:
+def orchestrate(ticket_id: int, work_dir: str) -> None:
     """
-    Drive the daisy chain until convergence, then move to action round.
+    Drive the daisy chain until convergence.
     Runs synchronously — attach to 'orchestrator' window to watch.
     """
-    print(f"\n[Orchestrator] Starting daisy chain for debate {debate_id}…\n")
-    session = _session_name(debate_id)
+    print(f"\n[Orchestrator] Starting daisy chain for council ticket {ticket_id}…\n")
+    session = _session_name(ticket_id)
+    round_num = 1
 
     while True:
-        debate = _debate_row(debate_id)
-        if not debate:
-            print("[Orchestrator] Debate not found. Exiting.")
+        if not _ticket_row(ticket_id):
+            print("[Orchestrator] Ticket not found. Exiting.")
             return
 
-        state = debate["state"]
-        if state == "archived":
-            print("[Orchestrator] Debate archived. Done.")
-            return
-        if state == "action_round":
-            print("[Orchestrator] Debate reached action round. Human review required.")
-            print(f"  Open the Scryer UI → Council tab → Debate {debate_id} to review action proposals.")
-            return
-
-        round_num = debate["round"]
-        members   = _active_members(debate_id)
+        members = _active_members(ticket_id)
         if not members:
             print("[Orchestrator] No active members. Exiting.")
             return
 
         print(f"\n[Orchestrator] Round {round_num} — {len(members)} members")
 
-        # One full pass through all members
-        round_complete = False
         for member in members:
-
-            # Check for human pending turn before each persona
-            if _pending_human_turn(debate_id):
-                print(f"[Orchestrator] Human raised hand — pausing for human input.")
-                _clear_human_pending(debate_id)
-                print("[Orchestrator] Waiting for human to press Enter to continue…")
-                try:
-                    input()
-                except EOFError:
-                    pass
-
             persona_name = member["persona_name"]
             member_id    = member["id"]
             win          = _window_name(persona_name)
 
-            # Grant turn in DB
-            turn_id = _grant_turn_db(debate_id, member_id, round_num)
+            turn_id = _grant_turn_db(ticket_id, member_id, round_num)
             print(f"  → {persona_name} (member {member_id}, turn {turn_id})")
 
-            # Send turn notification to persona's tmux window
             grant_msg = (
-                f"COUNCIL TURN GRANTED — Debate ID: {debate_id}, "
-                f"Round: {round_num}, Turn ID: {turn_id}, Member ID: {member_id}. "
-                f"Call get_debate_state({debate_id}) to read the full discussion, "
-                f"add your analysis with add_council_comment if you have something new, "
-                f"then call submit_turn(debate_id={debate_id}, member_id={member_id}, "
-                f"did_comment=<true|false>, turn_id={turn_id})."
+                f"COUNCIL TURN GRANTED — Turn ID {turn_id}, Round {round_num}. "
+                f"Run: python3 state.py — then python3 comment.py \"...\" if you have something new — "
+                f"then python3 submit.py {turn_id} true/false. No other actions."
             )
             _tmux_send(f"{session}:{win}", grant_msg)
 
-            # Poll until turn is complete or timeout
             elapsed = 0
             while elapsed < TURN_TIMEOUT:
                 time.sleep(POLL_INTERVAL)
                 elapsed += POLL_INTERVAL
-                turn = _latest_turn_for_member(debate_id, member_id, round_num)
+                turn = _latest_turn_for_member(ticket_id, member_id, round_num)
                 if turn and turn.get("completed_at"):
                     action = "commented" if turn["did_comment"] else "passed"
                     print(f"     ✓ {persona_name} {action}")
                     break
             else:
                 print(f"     ⚠ {persona_name} timed out after {TURN_TIMEOUT}s — treating as pass")
-                # Mark as complete with did_comment=0
                 now = datetime.now(timezone.utc).isoformat()
                 with _conn() as c:
                     c.execute(
@@ -432,61 +407,31 @@ def orchestrate(debate_id: int, work_dir: str) -> None:
                         (now, turn_id)
                     )
 
-        # End of round — check convergence
-        converged = _check_convergence(debate_id, round_num)
+        converged = _check_convergence(ticket_id, round_num)
         if converged:
-            print(f"\n[Orchestrator] Round {round_num}: all members passed — CONVERGED.")
-            print("[Orchestrator] Beginning action proposal round…")
-            _set_debate_state(debate_id, "action_round")
-
-            # Notify all personas for action round
-            for member in members:
-                win = _window_name(member["persona_name"])
-                action_msg = (
-                    f"ACTION ROUND — The debate has converged. "
-                    f"You now have one final turn to propose actions. "
-                    f"Call propose_action(debate_id={debate_id}, member_id={member['id']}, "
-                    f"action_type=<'create'|'comment'|'reopen'>, content=<your proposal>, "
-                    f"ticket_id=<optional>) for each action you recommend. "
-                    f"When done, call submit_turn(debate_id={debate_id}, "
-                    f"member_id={member['id']}, did_comment=false, turn_id=None)."
-                )
-                _tmux_send(f"{session}:{win}", action_msg)
-                # Wait for action turn completion (reuse polling loop)
-                turn_id = _grant_turn_db(debate_id, member["id"], round_num)
-                elapsed = 0
-                while elapsed < TURN_TIMEOUT:
-                    time.sleep(POLL_INTERVAL)
-                    elapsed += POLL_INTERVAL
-                    turn = _latest_turn_for_member(debate_id, member["id"], round_num)
-                    if turn and turn["id"] == turn_id and turn.get("completed_at"):
-                        break
-                print(f"  ✓ {member['persona_name']} action proposals submitted")
-
-            print("\n[Orchestrator] Action round complete. Human review required in the UI.")
+            print(f"\n[Orchestrator] Round {round_num}: all members passed — CONVERGED. Discussion complete.")
             return
-
         else:
-            print(f"[Orchestrator] Round {round_num}: debate still active — advancing to round {round_num + 1}")
-            _advance_round_db(debate_id, round_num + 1)
+            print(f"[Orchestrator] Round {round_num}: still active — advancing to round {round_num + 1}")
+            round_num += 1
 
 
 # ── Default persona setup ─────────────────────────────────────────────────────
 
 def _get_default_seats() -> list[dict]:
-    """Return all global personas as default seats, ordered alphabetically."""
-    with _conn() as c:
-        rows = c.execute(
-            "SELECT * FROM personas WHERE is_global = 1 ORDER BY name"
-        ).fetchall()
+    """Return all personas from council/personas/*.md as default seats, ordered alphabetically."""
+    personas_dir = REPO_ROOT / "council" / "personas"
+    if not personas_dir.exists():
+        return []
+    files = sorted(personas_dir.glob("*.md"))
     return [
         {
-            "persona_id":  r["id"],
-            "provider":    "claude",
-            "model":       "claude-sonnet-4-6",
-            "seat_order":  i,
+            "persona_slug": p.stem,
+            "provider":     "claude",
+            "model":        "claude-sonnet-4-6",
+            "seat_order":   i,
         }
-        for i, r in enumerate(rows)
+        for i, p in enumerate(files)
     ]
 
 
@@ -494,7 +439,7 @@ def _get_default_seats() -> list[dict]:
 
 def launch(entity_type: str, entity_id: str,
            seats: list[dict] | None = None,
-           debate_id: int | None = None,
+           ticket_id: int | None = None,
            warmup: int = 15,
            no_attach: bool = False):
 
@@ -506,16 +451,31 @@ def launch(entity_type: str, entity_id: str,
         if scryer_root else f"/tmp/council-{entity_type}-{entity_id}"
     Path(work_dir).mkdir(parents=True, exist_ok=True)
 
-    # Create or resume debate
-    if debate_id:
-        debate = _debate_row(debate_id)
-        if not debate:
-            print(f"ERROR: Debate {debate_id} not found.")
+    # Write session-level settings (copied into each persona subdir by launch_persona_windows)
+    import json as _json
+    settings_dir = Path(work_dir) / ".claude"
+    settings_dir.mkdir(exist_ok=True)
+    settings_file = settings_dir / "settings.json"
+    settings_file.write_text(_json.dumps({
+        "permissions": {
+            "allow": [
+                "Read",
+                "Bash(python3 *)",
+            ],
+            "deny": []
+        }
+    }, indent=2))
+
+    # Find or create council ticket
+    if ticket_id:
+        ticket = _ticket_row(ticket_id)
+        if not ticket:
+            print(f"ERROR: Ticket {ticket_id} not found.")
             sys.exit(1)
-        print(f"Resuming debate {debate_id}")
+        print(f"Resuming council ticket {ticket_id}")
     else:
-        debate = _get_or_create_debate(entity_type, entity_id)
-        debate_id = debate["id"]
+        ticket = _get_or_create_ticket(entity_type, entity_id)
+        ticket_id = ticket["id"]
 
     # Add members
     if not seats:
@@ -524,7 +484,7 @@ def launch(entity_type: str, entity_id: str,
         print("ERROR: No personas found. Seed defaults or create personas first.")
         sys.exit(1)
 
-    members = _add_members_from_seat_list(debate_id, seats)
+    members = _add_members_from_seat_list(ticket_id, seats)
     if not members:
         print("ERROR: No active members after setup.")
         sys.exit(1)
@@ -532,28 +492,25 @@ def launch(entity_type: str, entity_id: str,
     # Build entity summary and CLAUDE.md per persona
     entity_sum = _entity_summary(entity_type, entity_id)
     for m in members:
-        m["_claude_md"] = _build_persona_claude_md(m, debate, entity_sum)
+        m["_claude_md"] = _build_persona_claude_md(m, ticket, entity_sum)
 
-    print(f"\nCouncil debate {debate_id} — {entity_type}:{entity_id}")
+    print(f"\nCouncil ticket {ticket_id} — {entity_type}:{entity_id}")
     print(f"Members: {', '.join(m['persona_name'] for m in members)}")
     print(f"Work dir: {work_dir}")
 
     # Launch tmux windows
-    launch_persona_windows(debate_id, members, work_dir, warmup=warmup)
+    launch_persona_windows(ticket_id, members, work_dir, warmup=warmup)
 
-    session = _session_name(debate_id)
+    session = _session_name(ticket_id)
     if no_attach:
         print(f"\nSession '{session}' ready. Attach with: tmux attach -t {session}")
-        print("Running orchestrator in background…")
-        import subprocess
-        script = (
+        print("Running orchestrator in orchestrator window…")
+        orch_cmd = (
             f"cd {shlex.quote(str(REPO_ROOT))} && "
-            f"python3 council/launch.py --type {entity_type} --id {entity_id} "
-            f"--debate {debate_id} --orchestrate-only"
+            f"python3 council/launch.py --type {shlex.quote(entity_type)} --id {shlex.quote(str(entity_id))} "
+            f"--ticket {ticket_id} --orchestrate-only"
         )
-        subprocess.Popen(["bash", "-c", script], close_fds=True, start_new_session=True,
-                         stdout=open(f"{work_dir}/orchestrator.log", "a"),
-                         stderr=subprocess.STDOUT)
+        _tmux_send(f"{session}:orchestrator", orch_cmd)
         return
 
     # Attach and orchestrate
@@ -563,45 +520,57 @@ def launch(entity_type: str, entity_id: str,
         close_fds=True
     )
     time.sleep(1)
-    orchestrate(debate_id, work_dir)
+    orchestrate(ticket_id, work_dir)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch a Scryer Agent Council session.")
-    parser.add_argument("--type",    required=True, choices=["project", "subproject", "ticket"],
-                        help="Entity type")
-    parser.add_argument("--id",      required=True, help="Entity id (name for project, numeric id otherwise)")
-    parser.add_argument("--debate",  type=int, default=None,
-                        help="Resume a specific debate by id")
-    parser.add_argument("--warmup",  type=int, default=15,
-                        help="Seconds to wait before sending first message to each persona (default: 15)")
-    parser.add_argument("--no-attach", action="store_true",
-                        help="Set up sessions but do not attach (for API / background use)")
-    parser.add_argument("--orchestrate-only", action="store_true",
-                        help="Skip setup and run orchestration loop only (used by --no-attach)")
+    parser.add_argument("--type",             default=None, choices=["project", "subproject", "ticket"])
+    parser.add_argument("--id",               default=None)
+    parser.add_argument("--ticket",           type=int, default=None)
+    parser.add_argument("--warmup",           type=int, default=15)
+    parser.add_argument("--no-attach",        action="store_true")
+    parser.add_argument("--orchestrate-only", action="store_true")
+    parser.add_argument("--from-stdin",       action="store_true",
+                        help="Read JSON payload from stdin (API mode)")
     args = parser.parse_args()
 
+    if args.from_stdin:
+        import json as _json
+        payload = _json.loads(sys.stdin.read())
+        launch(
+            entity_type=payload["entity_type"],
+            entity_id=str(payload["entity_id"]),
+            seats=payload.get("seats") or None,
+            warmup=payload.get("warmup", 15),
+            no_attach=True,
+        )
+        sys.exit(0)
+
     if args.orchestrate_only:
-        if not args.debate:
-            print("ERROR: --orchestrate-only requires --debate")
+        if not args.ticket:
+            print("ERROR: --orchestrate-only requires --ticket")
             sys.exit(1)
-        debate = _debate_row(args.debate)
-        if not debate:
-            print(f"ERROR: Debate {args.debate} not found.")
+        ticket = _ticket_row(args.ticket)
+        if not ticket:
+            print(f"ERROR: Ticket {args.ticket} not found.")
             sys.exit(1)
         with _conn() as c:
             r = c.execute("SELECT value FROM scryer_config WHERE key = 'scryer_root'").fetchone()
         scryer_root = r["value"] if r else ""
         work_dir = str(Path(scryer_root).expanduser() / "council" / f"{args.type}-{args.id}") \
             if scryer_root else f"/tmp/council-{args.type}-{args.id}"
-        orchestrate(args.debate, work_dir)
+        orchestrate(args.ticket, work_dir)
     else:
+        if not args.type or not args.id:
+            print("ERROR: --type and --id are required unless using --from-stdin")
+            sys.exit(1)
         launch(
             entity_type=args.type,
             entity_id=args.id,
-            debate_id=args.debate,
+            ticket_id=args.ticket,
             warmup=args.warmup,
             no_attach=args.no_attach,
         )

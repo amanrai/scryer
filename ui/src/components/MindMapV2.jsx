@@ -1,6 +1,7 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 import { marked } from 'marked'
 import PlanEditor from './PlanEditor.jsx'
+import CouncilLaunchDialog from './CouncilLaunchDialog.jsx'
 
 // ── Council helpers ─────────────────────────────────────────────────────────────
 
@@ -22,19 +23,20 @@ function CouncilBadge({ debate, onClick }) {
   )
 }
 
-// ── Council debate modal ────────────────────────────────────────────────────────
+// ── Council debate modal (T131 — live debate view) ─────────────────────────────
 
-function CouncilDebateModal({ debate: initialDebate, onClose, entityType, entityId, entityLabel }) {
-  const [debate, setDebate]     = useState(initialDebate)
-  const [data, setData]         = useState(null)
-  const [loading, setLoading]   = useState(true)
-  const [launching, setLaunching] = useState(false)
+function CouncilDebateModal({ debate: initialDebate, onClose, onMinimize, onDebateChange, entityType, entityId, entityLabel }) {
+  const hasActive                   = initialDebate && initialDebate.state !== 'archived'
+  const [debate, setDebate]         = useState(hasActive ? initialDebate : null)
+  const [data, setData]             = useState(null)
+  const [loading, setLoading]       = useState(!!hasActive)
+  const [showLaunch, setShowLaunch] = useState(!hasActive)
+  const threadRef                   = useRef(null)
 
-  async function load(d) {
-    if (!d) return
-    setLoading(true)
+  async function load(debateObj) {
+    if (!debateObj) return
     try {
-      const r = await fetch(`/api/debates/${d.id}`)
+      const r = await fetch(`/api/debates/${debateObj.id}`)
       const j = await r.json()
       setData(j)
     } finally {
@@ -42,77 +44,91 @@ function CouncilDebateModal({ debate: initialDebate, onClose, entityType, entity
     }
   }
 
-  async function launchCouncil() {
-    setLaunching(true)
-    try {
-      const res = await fetch('/api/council/launch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entity_type: entityType, entity_id: entityId }),
-      })
-      const j = await res.json()
-      if (!res.ok) throw new Error(j.error)
-      // Poll for debate to appear
-      let tries = 0
-      while (tries++ < 20) {
-        await new Promise(r => setTimeout(r, 1000))
-        const dr = await fetch(`/api/debates?entity_type=${entityType}&entity_id=${encodeURIComponent(entityId)}`)
-        if (dr.ok) {
-          const dj = await dr.json()
-          if (dj.debate) { setDebate(dj.debate); break }
-        }
-      }
-    } catch (e) {
-      alert(e.message)
-    } finally {
-      setLaunching(false)
-    }
-  }
+  // Initial load + live poll every 5s when debate is active
+  useEffect(() => {
+    if (!debate) { setLoading(false); return }
+    load(debate)
+    const interval = setInterval(() => {
+      if (debate.state !== 'archived') load(debate)
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [debate?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { load(debate) }, [debate?.id])
+  // Scroll thread to bottom when new comments arrive
+  useEffect(() => {
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight
+  }, [data?.comments?.length])
+
   useEffect(() => {
     const onKey = e => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  async function endDebate() {
+    if (!confirm('End this debate? The comment history will be preserved but council members will be removed.')) return
+    await fetch(`/api/debates/${debate.id}/end`, { method: 'POST' })
+    setDebate(null)
+    setData(null)
+    setShowLaunch(true)
+  }
+
+  function handleLaunched(newDebate) {
+    setDebate(newDebate)
+    setLoading(true)
+    setShowLaunch(false)
+    onDebateChange?.(newDebate)
+  }
+
+  if (showLaunch) {
+    return (
+      <CouncilLaunchDialog
+        entityType={entityType}
+        entityId={entityId}
+        entityLabel={entityLabel}
+        onClose={onClose}
+        onLaunched={handleLaunched}
+      />
+    )
+  }
+
   return (
     <div className="mm-modal-backdrop" onClick={onClose}>
       <div className="mm-modal council-modal" onClick={e => e.stopPropagation()}>
         <div className="mm-modal-actions">
+          <button className="council-end-btn" onClick={endDebate}>End Debate</button>
+          {onMinimize && <button className="mm-modal-minimize" onClick={onMinimize} title="Minimize">▼</button>}
           <button className="mm-modal-close" onClick={onClose}>✕</button>
         </div>
+
         <div className="mm-modal-header">
-          <span className="v2n-council-badge" style={{ background: COUNCIL_STATE_COLOR[debate?.state] ?? '#61afef', marginRight: 8, fontSize: 14 }}>⚖</span>
+          <span className="v2n-council-badge" style={{ background: COUNCIL_STATE_COLOR[debate?.state] ?? '#4a5060', marginRight: 8, fontSize: 14 }}>⚖</span>
           <h2 className="mm-modal-title">Council — {entityLabel}</h2>
         </div>
 
-        {!debate ? (
-          <div className="council-modal-body">
-            <p className="mm-modal-desc mm-modal-empty">No council debate yet for this entity.</p>
-            <button className="btn-save" onClick={launchCouncil} disabled={launching}>
-              {launching ? 'Launching…' : 'Launch Council'}
-            </button>
-          </div>
-        ) : (
-          <div className="council-modal-body">
+        <div className="council-modal-body">
             <div className="council-meta">
-              <span className="council-state-chip" style={{ background: COUNCIL_STATE_COLOR[debate.state] }}>{debate.state}</span>
+              <span className="council-state-chip" style={{ background: COUNCIL_STATE_COLOR[debate.state] ?? '#4a5060' }}>
+                {debate.state.replace('_', ' ')}
+              </span>
               <span className="council-round">Round {debate.round}</span>
-              {data?.members && <span className="council-members">{data.members.length} personas</span>}
+              {data?.members && <span className="council-members">{data.members.filter(m => m.state === 'active').length} active</span>}
+              {debate.state === 'active' && <span className="council-live-dot" title="Live — polling every 5s" />}
             </div>
 
-            {loading && <p className="mm-modal-desc">Loading…</p>}
+            {loading && !data && <p className="mm-modal-desc">Loading…</p>}
 
-            {!loading && data && (
+            {data && (
               <>
                 {data.members?.length > 0 && (
                   <div className="council-section">
-                    <div className="mm-modal-section-label">Members</div>
+                    <div className="mm-modal-section-label">Personas</div>
                     <div className="council-member-list">
                       {data.members.map(m => (
-                        <span key={m.id} className={`council-member-chip ${m.state === 'removed' ? 'removed' : ''}`}>
+                        <span key={m.id} className={`council-member-chip ${m.state === 'removed' ? 'removed' : ''}`}
+                          title={`${m.provider} / ${m.model}`}>
                           {m.persona_name}
+                          <span className="council-member-provider">{m.provider[0].toUpperCase()}</span>
                         </span>
                       ))}
                     </div>
@@ -121,13 +137,17 @@ function CouncilDebateModal({ debate: initialDebate, onClose, entityType, entity
 
                 {data.comments?.length > 0 && (
                   <div className="council-section">
-                    <div className="mm-modal-section-label">Discussion ({data.comments.length} comments)</div>
-                    <div className="council-thread">
+                    <div className="mm-modal-section-label">
+                      Discussion
+                      <span style={{ marginLeft: 6, fontWeight: 400, color: 'var(--text-muted)' }}>
+                        {data.comments.length} comment{data.comments.length !== 1 ? 's' : ''}
+                      </span>
+                    </div>
+                    <div className="council-thread" ref={threadRef}>
                       {data.comments.map(c => (
                         <div key={c.id} className={`council-comment ${c.author === 'human' ? 'council-comment--human' : ''}`}>
                           <div className="council-comment-header">
-                            <span className="council-comment-author">{c.persona_name || c.author}</span>
-                            <span className="council-comment-round">R{c.round}</span>
+                            <span className="council-comment-author">{c.author}</span>
                             <span className="council-comment-ts">{new Date(c.created_at).toLocaleString()}</span>
                           </div>
                           <div className="council-comment-body" dangerouslySetInnerHTML={{ __html: marked.parse(c.content ?? '') }} />
@@ -137,30 +157,14 @@ function CouncilDebateModal({ debate: initialDebate, onClose, entityType, entity
                   </div>
                 )}
 
-                {data.actions?.length > 0 && (
-                  <div className="council-section">
-                    <div className="mm-modal-section-label">Action Proposals</div>
-                    {data.actions.map(a => (
-                      <div key={a.id} className={`council-action council-action--${a.status}`}>
-                        <div className="council-action-header">
-                          <span className="council-action-type">{a.action_type}</span>
-                          {a.ticket_id && <span className="council-action-ticket">T{a.ticket_id}</span>}
-                          <span className="council-action-status">{a.status}</span>
-                          <span className="council-action-author">{a.persona_name || 'human'}</span>
-                        </div>
-                        <div className="council-action-content">{a.content}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {data.comments?.length === 0 && data.actions?.length === 0 && (
-                  <p className="mm-modal-desc mm-modal-empty">Debate is active. Agent personas are being set up.</p>
+                {data.comments?.length === 0 && (
+                  <p className="mm-modal-desc mm-modal-empty">
+                    Personas are warming up — comments will appear here as they speak.
+                  </p>
                 )}
               </>
             )}
           </div>
-        )}
       </div>
     </div>
   )
@@ -369,6 +373,7 @@ function buildLayout(project, expandedSpId, showClosed, filterLower, ancestorIds
             allBlockerIds: (t.blocked_by ?? []).map(b => b.id),
             parentId: `sp-${t._spId}`,
             priority: t.priority,
+            isCouncil: t.spl_ticket_type === 1,
           }
           nodeMap[node.id] = node
           nodeList.push(node)
@@ -421,7 +426,7 @@ function RootNode({ node, onLaunch, onEdit, onSettings, onDeselect, debate, onCo
         onMouseLeave={handleLeave}
       >
         <span>{node.label}</span>
-        {debate && <CouncilBadge debate={debate} onClick={onCouncil} />}
+        {debate && debate.state !== 'archived' && <CouncilBadge debate={debate} onClick={onCouncil} />}
         {hover && (
           <div className="v2n-toolbar">
             {onLaunch && (
@@ -474,7 +479,7 @@ function SpNode({ node, onClick, onLaunch, onEdit, debate, onCouncil }) {
       >
         <span className="v2n-sp-name">{node.label}</span>
         <span className="v2n-sp-count">{count}</span>
-        {debate && <CouncilBadge debate={debate} onClick={d => onCouncil?.(d, { entityType: 'subproject', entityId: node.entityId, entityLabel: node.label })} />}
+        {debate && debate.state !== 'archived' && <CouncilBadge debate={debate} onClick={d => onCouncil?.(d, { entityType: 'subproject', entityId: node.entityId, entityLabel: node.label })} />}
         {hover && onLaunch && (
           <div className="v2n-toolbar">
             <button className="mm-tb-btn" data-tip="Plan" onClick={e => { e.stopPropagation(); onLaunch('plan', null, entity) }}>
@@ -504,7 +509,7 @@ function TicketNode({ node, onSingleClick, onDoubleClick, inDepMode, isSelected,
     <foreignObject x={node.cx - node.w / 2} y={node.cy - node.h / 2} width={node.w} height={node.h}
       style={{ opacity: dimmed ? 0.2 : 1, transition: 'opacity 0.2s ease' }}>
       <div
-        className={`v2n-ticket${node.state === 'Closed' ? ' v2n-ticket--closed' : ''}${isSelected ? ' v2n-ticket--selected' : ''}`}
+        className={`v2n-ticket${node.state === 'Closed' ? ' v2n-ticket--closed' : ''}${isSelected ? ' v2n-ticket--selected' : ''}${node.isCouncil ? ' v2n-ticket--council' : ''}`}
         onClick={() => (node.blockerCount > 0 && !inDepMode) ? onSingleClick(node) : onDoubleClick(node)}
         onDoubleClick={e => { e.stopPropagation(); onDoubleClick(node) }}
       >
@@ -512,7 +517,7 @@ function TicketNode({ node, onSingleClick, onDoubleClick, inDepMode, isSelected,
           <span className="v2n-dot" style={{ background: STATE_COLOR[node.state] ?? STATE_COLOR['Unopened'] }} />
           <span className="v2n-tid">T{node.ticketId}</span>
           {bc > 0 && <span className="v2n-badge">{bc}</span>}
-          {debate && (
+          {debate && debate.state !== 'archived' && (
             <CouncilBadge debate={debate} onClick={d => onCouncil?.(d, { entityType: 'ticket', entityId: node.ticketId, entityLabel: node.label })} />
           )}
         </div>
@@ -686,6 +691,69 @@ function TaskModal({ node, onClose, onLaunch, debate, onCouncil }) {
   )
 }
 
+// ── Tmux session drawer ─────────────────────────────────────────────────────────
+
+const SESSION_TYPE_LABEL = { planning: 'Plan', architect: 'Arch', council: '⚖', other: '⊟' }
+
+function TmuxSessionDrawer({ projectName, onAttach }) {
+  const [open, setOpen]       = useState(false)
+  const [sessions, setSessions] = useState([])
+  const drawerRef             = useRef(null)
+
+  useEffect(() => {
+    function poll() {
+      fetch(`/api/projects/${encodeURIComponent(projectName)}/tmux-sessions`)
+        .then(r => r.json())
+        .then(d => setSessions(d.sessions || []))
+        .catch(() => {})
+    }
+    poll()
+    const id = setInterval(poll, 5000)
+    return () => clearInterval(id)
+  }, [projectName])
+
+  // Close drawer on outside click
+  useEffect(() => {
+    if (!open) return
+    function onDown(e) {
+      if (drawerRef.current && !drawerRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  return (
+    <div className="tmux-drawer-wrap" ref={drawerRef}>
+      <button
+        className={`tmux-sessions-btn${sessions.length > 0 ? ' has-sessions' : ''}`}
+        onClick={() => setOpen(o => !o)}
+        title="Active tmux sessions"
+      >
+        ⊟{sessions.length > 0 && <span className="tmux-session-badge">{sessions.length}</span>}
+      </button>
+
+      {open && (
+        <div className="tmux-drawer-panel">
+          <div className="tmux-drawer-header">
+            <span>Active Sessions</span>
+            <button className="tmux-drawer-close" onClick={() => setOpen(false)}>✕</button>
+          </div>
+          {sessions.length === 0
+            ? <div className="tmux-drawer-empty">No active sessions</div>
+            : sessions.map(s => (
+              <div key={s.name} className="tmux-session-row">
+                <span className={`tmux-type-badge tmux-type-${s.type}`}>{SESSION_TYPE_LABEL[s.type] ?? s.type}</span>
+                <span className="tmux-session-label" title={s.name}>{s.label}</span>
+                <button className="tmux-session-open-btn" onClick={() => { onAttach(s); setOpen(false) }}>Open ↗</button>
+              </div>
+            ))
+          }
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function MindMapV2({ project, onLaunch, onSettings, filter = '', autoOpenEditor = false, onAutoOpenEditorDone, debates = [] }) {
@@ -698,7 +766,8 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '', 
   const [depTicketId, setDepTicketId]         = useState(null)
   const [preDepExpanded, setPreDepExpanded]   = useState(null)
   const [tagFilter, setTagFilter]             = useState('')
-  const [councilModal, setCouncilModal]       = useState(null)  // {debate, entityType, entityId, entityLabel}
+  const [councilModal, setCouncilModal]       = useState(null)   // {debate, entityType, entityId, entityLabel}
+  const [councilMinimized, setCouncilMinimized] = useState(false)
 
   // Build a lookup: "entityType:entityId" → debate
   const debateMap = useMemo(() => {
@@ -796,6 +865,15 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '', 
           <input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} />
           Show closed paths
         </label>
+        <TmuxSessionDrawer
+          projectName={project.name}
+          onAttach={s => onLaunch('planning-attach', s.type, {
+            type: 'tmux',
+            label: s.label,
+            tmuxSession: s.name,
+            entityId: s.name,
+          })}
+        />
       </div>
 
       {/* SVG canvas */}
@@ -897,14 +975,25 @@ export default function MindMapV2({ project, onLaunch, onSettings, filter = '', 
         <PlanEditor node={editingNode} onClose={() => setEditingNode(null)} />
       )}
 
-      {councilModal && (
+      {councilModal && !councilMinimized && (
         <CouncilDebateModal
           debate={councilModal.debate}
           entityType={councilModal.entityType}
           entityId={councilModal.entityId}
           entityLabel={councilModal.entityLabel}
-          onClose={() => setCouncilModal(null)}
+          onClose={() => { setCouncilModal(null); setCouncilMinimized(false) }}
+          onMinimize={() => setCouncilMinimized(true)}
+          onDebateChange={d => setCouncilModal(prev => ({ ...prev, debate: d }))}
         />
+      )}
+
+      {councilModal && councilMinimized && (
+        <div className="council-minimized-chip">
+          <span className="council-minimized-icon">⚖</span>
+          <span className="council-minimized-label">{councilModal.entityLabel}</span>
+          <button className="minimized-chip-restore" onClick={() => setCouncilMinimized(false)} title="Restore">▲</button>
+          <button className="minimized-chip-close" onClick={() => { setCouncilModal(null); setCouncilMinimized(false) }} title="Close">✕</button>
+        </div>
       )}
     </div>
   )

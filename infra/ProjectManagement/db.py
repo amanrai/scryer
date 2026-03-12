@@ -47,14 +47,17 @@ def _create_schema(conn) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS tickets (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            title       TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            state       TEXT NOT NULL DEFAULT 'Unopened',
-            priority    TEXT NOT NULL DEFAULT 'medium',
-            created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            title           TEXT NOT NULL,
+            description     TEXT NOT NULL DEFAULT '',
+            state           TEXT NOT NULL DEFAULT 'Unopened',
+            priority        TEXT NOT NULL DEFAULT 'medium',
+            spl_ticket_type INTEGER NOT NULL DEFAULT 0,
+            entity_type     TEXT NOT NULL DEFAULT '',
+            entity_id       TEXT NOT NULL DEFAULT '',
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS ticket_blocks (
@@ -67,6 +70,7 @@ def _create_schema(conn) -> None:
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             ticket_id   INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
             parent_id   INTEGER REFERENCES comments(id),
+            author      TEXT NOT NULL DEFAULT 'human',
             content     TEXT NOT NULL DEFAULT '',
             is_root     INTEGER NOT NULL DEFAULT 0,
             created_at  TEXT NOT NULL
@@ -133,56 +137,23 @@ def _create_schema(conn) -> None:
             created_at       TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS council_debates (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            entity_type TEXT NOT NULL,
-            entity_id   TEXT NOT NULL,
-            state       TEXT NOT NULL DEFAULT 'active',
-            round       INTEGER NOT NULL DEFAULT 1,
-            created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL,
-            UNIQUE(entity_type, entity_id)
-        );
-
         CREATE TABLE IF NOT EXISTS council_members (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
-            persona_id INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
-            seat_order INTEGER NOT NULL DEFAULT 0,
-            provider   TEXT NOT NULL DEFAULT 'claude',
-            model      TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
-            state      TEXT NOT NULL DEFAULT 'active',
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS council_comments (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
-            member_id  INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
-            author     TEXT NOT NULL DEFAULT 'human',
-            round      INTEGER NOT NULL DEFAULT 1,
-            content    TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS council_actions (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            debate_id     INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
-            member_id     INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
-            action_type   TEXT NOT NULL,
-            ticket_id     INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
-            content       TEXT NOT NULL DEFAULT '',
-            conflicts_with INTEGER REFERENCES council_actions(id) ON DELETE SET NULL,
-            status        TEXT NOT NULL DEFAULT 'pending',
-            created_at    TEXT NOT NULL
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id    INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+            persona_slug TEXT NOT NULL DEFAULT '',
+            seat_order   INTEGER NOT NULL DEFAULT 0,
+            provider     TEXT NOT NULL DEFAULT 'claude',
+            model        TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+            state        TEXT NOT NULL DEFAULT 'active',
+            created_at   TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS council_turns (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
-            member_id  INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
-            round      INTEGER NOT NULL,
-            did_comment INTEGER NOT NULL DEFAULT 0,
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id    INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+            member_id    INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
+            round        INTEGER NOT NULL,
+            did_comment  INTEGER NOT NULL DEFAULT 0,
             completed_at TEXT
         );
     """)
@@ -365,6 +336,29 @@ def init_db() -> None:
         if "actor" not in log_cols:
             conn.execute("ALTER TABLE logs ADD COLUMN actor TEXT NOT NULL DEFAULT 'human'")
 
+        # Add columns to tickets if absent (older DBs)
+        ticket_cols = {r[1] for r in conn.execute("PRAGMA table_info(tickets)").fetchall()}
+        if "spl_ticket_type" not in ticket_cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN spl_ticket_type INTEGER NOT NULL DEFAULT 0")
+        if "entity_type" not in ticket_cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN entity_type TEXT NOT NULL DEFAULT ''")
+        if "entity_id" not in ticket_cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN entity_id TEXT NOT NULL DEFAULT ''")
+
+        # Add author to comments if absent (older DBs)
+        comment_cols = {r[1] for r in conn.execute("PRAGMA table_info(comments)").fetchall()}
+        if "author" not in comment_cols:
+            conn.execute("ALTER TABLE comments ADD COLUMN author TEXT NOT NULL DEFAULT 'human'")
+
+        persona_cols = {r[1] for r in conn.execute("PRAGMA table_info(personas)").fetchall()}
+        if "template_path" not in persona_cols:
+            conn.execute("ALTER TABLE personas ADD COLUMN template_path TEXT NOT NULL DEFAULT ''")
+
+        # Migrate council_members: replace persona_id FK with persona_slug text column
+        member_cols = {r[1] for r in conn.execute("PRAGMA table_info(council_members)").fetchall()}
+        if "persona_slug" not in member_cols:
+            conn.execute("ALTER TABLE council_members ADD COLUMN persona_slug TEXT NOT NULL DEFAULT ''")
+
         # Add columns to projects if absent (older DBs)
         proj_cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)").fetchall()}
         if "code_path" not in proj_cols:
@@ -471,49 +465,19 @@ def init_db() -> None:
                 project_id       INTEGER REFERENCES projects(id) ON DELETE CASCADE,
                 created_at       TEXT NOT NULL
             )""",
-            """CREATE TABLE IF NOT EXISTS council_debates (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                entity_type TEXT NOT NULL,
-                entity_id   TEXT NOT NULL,
-                state       TEXT NOT NULL DEFAULT 'active',
-                round       INTEGER NOT NULL DEFAULT 1,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL,
-                UNIQUE(entity_type, entity_id)
-            )""",
             """CREATE TABLE IF NOT EXISTS council_members (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
-                persona_id INTEGER NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
-                seat_order INTEGER NOT NULL DEFAULT 0,
-                provider   TEXT NOT NULL DEFAULT 'claude',
-                model      TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
-                state      TEXT NOT NULL DEFAULT 'active',
-                created_at TEXT NOT NULL
-            )""",
-            """CREATE TABLE IF NOT EXISTS council_comments (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                debate_id  INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
-                member_id  INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
-                author     TEXT NOT NULL DEFAULT 'human',
-                round      INTEGER NOT NULL DEFAULT 1,
-                content    TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL
-            )""",
-            """CREATE TABLE IF NOT EXISTS council_actions (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                debate_id      INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
-                member_id      INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
-                action_type    TEXT NOT NULL,
-                ticket_id      INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
-                content        TEXT NOT NULL DEFAULT '',
-                conflicts_with INTEGER REFERENCES council_actions(id) ON DELETE SET NULL,
-                status         TEXT NOT NULL DEFAULT 'pending',
-                created_at     TEXT NOT NULL
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id    INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+                persona_slug TEXT NOT NULL DEFAULT '',
+                seat_order   INTEGER NOT NULL DEFAULT 0,
+                provider     TEXT NOT NULL DEFAULT 'claude',
+                model        TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+                state        TEXT NOT NULL DEFAULT 'active',
+                created_at   TEXT NOT NULL
             )""",
             """CREATE TABLE IF NOT EXISTS council_turns (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                debate_id    INTEGER NOT NULL REFERENCES council_debates(id) ON DELETE CASCADE,
+                ticket_id    INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
                 member_id    INTEGER REFERENCES council_members(id) ON DELETE SET NULL,
                 round        INTEGER NOT NULL,
                 did_comment  INTEGER NOT NULL DEFAULT 0,
@@ -1058,14 +1022,14 @@ def update_ticket(ticket_id: int, actor: str = "human", **kwargs) -> dict:
     return get_ticket(ticket_id)
 
 
-def add_comment(ticket_id: int, content: str, actor: str = "human") -> dict:
+def add_comment(ticket_id: int, content: str, actor: str = "human", author: str = "human") -> dict:
     with get_conn() as conn:
         if not conn.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone():
             raise ValueError(f"Ticket {ticket_id} not found")
         leaf_id = _comment_leaf(ticket_id, conn)
         cur = conn.execute(
-            "INSERT INTO comments (ticket_id, parent_id, content, is_root, created_at) VALUES (?, ?, ?, 0, ?)",
-            (ticket_id, leaf_id, content, _now()),
+            "INSERT INTO comments (ticket_id, parent_id, author, content, is_root, created_at) VALUES (?, ?, ?, ?, 0, ?)",
+            (ticket_id, leaf_id, author, content, _now()),
         )
         comment = dict(conn.execute("SELECT * FROM comments WHERE id = ?", (cur.lastrowid,)).fetchone())
     log_action(
